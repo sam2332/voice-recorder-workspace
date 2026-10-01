@@ -248,6 +248,19 @@
   .ov-kind.k-shopping { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); }
   .ov-person { border: 1px solid var(--border); background: var(--surface-2); border-radius: 999px; padding: 1px 8px; font-size: 12px; margin: 0 4px 4px 0; }
   .ov-person:hover { border-color: var(--accent); }
+  .split-people { display: grid; gap: 6px; margin-bottom: 12px; }
+  .split-slot { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+  .split-slot input { flex: 1; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); }
+  .split-slot .n { min-width: 64px; color: var(--muted); text-align: right; }
+  .split-card { border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; background: var(--bg); display: grid; gap: 10px; min-height: 150px; }
+  .split-card .meta { font-size: 12px; color: var(--muted); }
+  .split-card .say { font-size: 17px; line-height: 1.5; }
+  .split-card .keys { display: flex; gap: 6px; flex-wrap: wrap; }
+  .split-card .keys .btn.sugg { border-color: var(--accent); background: var(--accent-soft); }
+  .split-tools { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 10px 0; font-size: 13px; }
+  .split-bar { height: 6px; border-radius: 3px; background: var(--surface-2); overflow: hidden; flex: 1 1 120px; }
+  .split-bar > i { display: block; height: 100%; background: var(--accent); }
+  .split-btn { margin-top: 6px; }
   .vprof { margin: 12px 0 4px; border: 1px solid var(--border); border-radius: 12px; padding: 8px 12px; background: var(--bg); }
   .vprof > summary { cursor: pointer; font-weight: 600; font-size: 14px; }
   .vprint { border-top: 1px solid var(--border); padding: 8px 0; display: grid; gap: 2px; }
@@ -809,6 +822,22 @@
   </form>
 </dialog>
 <div class="teach-tray hidden server-only" id="teach-tray"></div>
+
+<dialog id="split-dlg" class="wide">
+  <form method="dialog">
+    <h3 id="split-title">Split this voice</h3>
+    <p class="muted" style="margin:0 0 12px">Name the people mixed into this voice, then sort lines with the keys
+      <kbd>1</kbd>–<kbd>4</kbd>. Each line plays by itself. <kbd>S</kbd> skips (it stays as it is), <kbd>Z</kbd> goes back,
+      <kbd>Space</kbd> replays, and <kbd>Enter</kbd> accepts the suggestion. After a few lines per person, “Suggest the rest” sorts lines by voice.</p>
+    <div class="split-people" id="split-people"></div>
+    <div class="split-card" id="split-card"></div>
+    <div class="split-tools" id="split-tools"></div>
+    <div class="row">
+      <button class="btn" value="cancel" id="split-cancel">Cancel</button>
+      <button class="btn primary" type="button" id="split-save">Save</button>
+    </div>
+  </form>
+</dialog>
 
 <dialog id="merge-dlg">
   <form method="dialog">
@@ -2173,7 +2202,14 @@
       };
       b.ondblclick = () => { clearTimeout(clickTimer); rename(spk); };
       wrap.append(b);
-      if (state.server) wrap.append(whoPicker(spk));
+      if (state.server) {
+        const p = whoPicker(spk);
+        const sp = el('button', 'btn small split-btn', 'Split…'); sp.type = 'button';
+        sp.title = 'This voice mixes several people: sort its lines between them';
+        sp.onclick = () => openSplit(spk);
+        p.append(sp);
+        wrap.append(p);
+      }
       return wrap;
     }));
   }
@@ -2416,7 +2452,9 @@
     list.append(more);
     if (!all.length) list.prepend(el('div', 'note', 'No clear lines to play (everything overlaps or is very short).'));
     const side = el('div');
-    side.append(el('div', 'vr-sect', 'Who is this?'), whoPicker(v.spk));
+    const sp = btn('Several people? Split…', 'small', () => openSplit(v.spk));
+    sp.type = 'button'; sp.title = 'This voice mixes several people: sort its lines between them';
+    side.append(el('div', 'vr-sect', 'Who is this?'), whoPicker(v.spk), sp);
     body.append(list, side);
     card.append(body);
     if (card.tagName === 'DETAILS') card.ontoggle = () => { if (card.open && !shown) addSnips(); };
@@ -2888,6 +2926,189 @@
   $('teach-go').addEventListener('click', teachGo);
   $('teach-dlg').addEventListener('close', stopSnip);
   $('teach-later').addEventListener('click', stopSnip);
+
+  // ---------- Split one voice that is really several people ----------
+  // The user names up to 4 people and sorts lines with number keys (each plays by itself), longest
+  // (clearest) first. Once a few lines are tagged, the server suggests the rest by voice.
+  const split = { spk: null, slots: [], order: [], i: 0, pick: new Map(), hist: [], sugg: new Map(), playBtn: null };
+  const SKIP = '__skip__';
+
+  function openSplit(spk) {
+    if (!state.server || !isReady()) return;
+    if ($('voices-dlg').open) $('voices-dlg').close();
+    stopSnip();
+    Object.assign(split, { spk, slots: ['', '', ''], i: 0, pick: new Map(), hist: [], sugg: new Map() });
+    split.order = state.segments.filter(s => s.speaker === spk && !s.noise).sort((a, b) => (b.end - b.start) - (a.end - a.start));
+    $('split-title').textContent = `Split ${displayName(spk)} · ${plural(split.order.length, 'line')}`;
+    renderSplitPeople(); renderSplit();
+    $('split-dlg').showModal();
+    playSplit();
+  }
+
+  const splitNames = () => split.slots.map(s => s.trim());
+  const slotOf = name => splitNames().indexOf(name);
+
+  function renderSplitPeople() {
+    const box = $('split-people');
+    const dl = el('datalist'); dl.id = 'split-names';
+    [...new Set([...(state.allSpeakers || []), ...(state.tvNames || []), ...Object.keys(state.colors)])]
+      .filter(n => n && n !== split.spk && !n.startsWith('Unknown')).sort((a, b) => a.localeCompare(b))
+      .forEach(n => { const o = el('option'); o.value = n; dl.append(o); });
+    box.replaceChildren(dl, ...split.slots.map((v, i) => {
+      const row = el('div', 'split-slot');
+      const inp = el('input'); inp.value = v; inp.setAttribute('list', 'split-names');
+      inp.placeholder = i === 0 ? 'Person 1, e.g. Kenzie Meadows' : `Person ${i + 1}`;
+      inp.oninput = () => { split.slots[i] = inp.value; renderSplit(); };
+      inp.onkeydown = e => { if (e.key === 'Enter' || e.key === 'Escape') { e.preventDefault(); inp.blur(); } };
+      const n = [...split.pick.values()].filter(p => p === i).length;
+      row.append(el('kbd', null, String(i + 1)), inp, el('span', 'n', n ? plural(n, 'line') : ''));
+      return row;
+    }));
+    if (split.slots.length < 4) {
+      const add = btn('+ Another person', 'small', () => { split.slots.push(''); renderSplitPeople(); renderSplit(); });
+      add.type = 'button'; box.append(add);
+    }
+  }
+
+  function nextUnsorted(from) {
+    for (let k = from; k < split.order.length; k++) if (!split.pick.has(split.order[k])) return k;
+    for (let k = 0; k < from; k++) if (!split.pick.has(split.order[k])) return k;
+    return -1;
+  }
+
+  function renderSplit() {
+    const card = $('split-card');
+    const names = splitNames();
+    const done = split.pick.size, total = split.order.length;
+    const seg = split.order[split.i];
+    card.replaceChildren();
+    if (!seg || split.i < 0) {
+      card.append(el('div', 'say', 'Every line is sorted.'), el('div', 'meta', 'Press Save to move them. You can still press Z to go back.'));
+    } else {
+      const picked = split.pick.get(seg);
+      const sg = split.sugg.get(seg);
+      card.append(el('div', 'meta', `${clockAt(seg.start) || fmt(seg.start)} · ${(seg.end - seg.start).toFixed(1)} s`
+        + (picked !== undefined ? ` · sorted: ${picked === SKIP ? 'skipped' : displayName(names[picked] || '?')}` : '')
+        + (seg.overlap?.length ? ` · talking over: ${seg.overlap.map(displayName).join(', ')}` : '')));
+      card.append(el('div', 'say', seg.text));
+      const keys = el('div', 'keys');
+      const play = btn('', 'small', () => playSplit()); play.type = 'button';
+      play.append(svg(ICONS.play), ' Replay'); split.playBtn = play; keys.append(play);
+      names.forEach((n, i) => {
+        const b = btn(`${i + 1} · ${n ? displayName(n) : `Person ${i + 1}`}`, 'small' + (sg && sg.person === n ? ' sugg' : ''), () => splitPick(i));
+        b.type = 'button'; b.disabled = !n; keys.append(b);
+      });
+      const sk = btn('S · Skip', 'small', () => splitPick(SKIP)); sk.type = 'button'; keys.append(sk);
+      const bk = btn('Z · Back', 'small', () => splitBack()); bk.type = 'button'; bk.disabled = !split.hist.length; keys.append(bk);
+      card.append(keys);
+      if (sg) card.append(el('div', 'meta', `Sounds like ${displayName(sg.person)} · ${Math.round(sg.score * 100)}%${sg.strong ? ' (strong)' : ''}. Enter to accept.`));
+    }
+    // Progress + suggestion tools
+    const tools = $('split-tools');
+    const bar = el('div', 'split-bar'); const fill = el('i'); fill.style.width = `${total ? done / total * 100 : 0}%`; bar.append(fill);
+    const tagged = names.map((n, i) => n ? [...split.pick.values()].filter(p => p === i).length : 0);
+    const ready = tagged.filter(n => n > 0).length >= 1 && names.filter(Boolean).length >= 1;
+    const sug = btn('Suggest the rest by voice', 'small', () => splitSuggest()); sug.type = 'button';
+    sug.disabled = !ready; sug.title = ready ? 'Score every unsorted line against the lines you sorted' : 'Sort a few lines per person first';
+    const open = [...split.sugg.entries()].filter(([s]) => !split.pick.has(s));
+    const strong = open.filter(([, g]) => g.strong);
+    tools.replaceChildren(el('span', null, `${done} / ${total} sorted`), bar, sug);
+    if (open.length) {
+      const acc = btn(`Accept ${strong.length} strong`, 'small', () => splitAccept(strong)); acc.type = 'button'; acc.disabled = !strong.length;
+      const all = btn(`Accept all ${open.length} suggestions`, 'small', () => splitAccept(open)); all.type = 'button';
+      tools.append(acc, all);
+    }
+    $('split-save').disabled = ![...split.pick.values()].some(p => p !== SKIP);
+  }
+
+  function playSplit() {
+    const seg = split.order[split.i];
+    if (!seg || !split.playBtn) return;
+    if (snipBtn === split.playBtn) stopSnip();
+    playSnip(seg, split.playBtn);
+  }
+
+  function splitPick(p) {
+    const seg = split.order[split.i];
+    if (!seg || (p !== SKIP && !splitNames()[p])) return;
+    split.hist.push({ seg, prev: split.pick.get(seg), i: split.i });
+    split.pick.set(seg, p);
+    const k = nextUnsorted(split.i + 1);
+    split.i = k < 0 ? split.order.length : k;
+    renderSplitPeople(); renderSplit(); playSplit();
+  }
+
+  function splitBack() {
+    const h = split.hist.pop(); if (!h) return;
+    if (h.prev === undefined) split.pick.delete(h.seg); else split.pick.set(h.seg, h.prev);
+    split.i = h.i;
+    renderSplitPeople(); renderSplit(); playSplit();
+  }
+
+  function splitAccept(entries) {
+    for (const [seg, g] of entries) {
+      const i = slotOf(g.person);
+      if (i >= 0 && !split.pick.has(seg)) { split.hist.push({ seg, prev: undefined, i: split.i }); split.pick.set(seg, i); }
+    }
+    const k = nextUnsorted(split.i);
+    split.i = k < 0 ? split.order.length : k;
+    renderSplitPeople(); renderSplit(); playSplit();
+  }
+
+  async function splitSuggest() {
+    const names = splitNames();
+    const seeds = {};
+    for (const [seg, p] of split.pick) if (p !== SKIP && names[p]) (seeds[names[p]] ||= []).push({ start: seg.start, text: seg.text });
+    const tools = $('split-tools');
+    tools.append(el('span', 'muted', 'Listening… (the first time loads the voice model)'));
+    let r;
+    try {
+      r = await api(`/api/days/${state.date}/voice-split`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ speaker: split.spk, seeds }) });
+    } catch (e) { toast(e.message); renderSplit(); return; }
+    split.sugg = new Map();
+    for (const l of r.lines) { const seg = split.order.find(s => sameLine(s, l)); if (seg) split.sugg.set(seg, l); }
+    toast(r.lines.length ? `${plural(r.lines.length, 'line')} sound like someone you named` : 'No other lines sound clearly like them yet. Sort a few more and try again.');
+    renderSplit();
+  }
+
+  async function splitSave() {
+    const names = splitNames();
+    const old = [], neu = [], teachBy = {};
+    for (const [seg, p] of split.pick) {
+      if (p === SKIP || !names[p] || names[p] === seg.speaker) continue;
+      old.push(seg); neu.push({ ...seg, speaker: names[p], edited: true });
+      if (!names[p].startsWith('Unknown')) (teachBy[names[p]] ||= []).push({ start: seg.start, text: seg.text });
+    }
+    stopSnip();
+    $('split-dlg').close();
+    if (!old.length) return;
+    const date = state.date;
+    await replaceLines(old, neu, `Split ${displayName(split.spk)}: moved ${plural(old.length, 'line')}`);
+    // Teach each person's profile from their sorted lines (the server skips short / overlapping ones)
+    for (const [person, lines] of Object.entries(teachBy)) {
+      try { await api(`/api/days/${date}/voice-train`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ person, lines }) }); }
+      catch (e) { toast(`Couldn't teach ${displayName(person)}: ${e.message}`); }
+    }
+    loadSpeakers();
+  }
+
+  $('split-save').addEventListener('click', splitSave);
+  $('split-cancel').addEventListener('click', stopSnip);
+  $('split-dlg').addEventListener('close', stopSnip);
+  $('split-dlg').addEventListener('keydown', e => {
+    if (e.target.matches('input, select, textarea') || e.ctrlKey || e.metaKey || e.altKey) return;
+    const k = e.key.toLowerCase();
+    if (/^[1-4]$/.test(k) && split.slots[+k - 1] !== undefined) { e.preventDefault(); splitPick(+k - 1); }
+    else if (k === 's') { e.preventDefault(); splitPick(SKIP); }
+    else if (k === 'z') { e.preventDefault(); splitBack(); }
+    else if (k === ' ') { e.preventDefault(); playSplit(); }
+    else if (k === 'enter') {
+      e.preventDefault();
+      const g = split.sugg.get(split.order[split.i]);
+      if (g && slotOf(g.person) >= 0) splitPick(slotOf(g.person));
+    }
+  });
 
   // Scissors: cut one line out of the original recording as an MP3 in <day>/clips/
   async function saveClip(s, btn) {

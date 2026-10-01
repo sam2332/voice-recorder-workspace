@@ -131,6 +131,14 @@ A 2.5-hour day takes about 4 minutes to diarize on the RTX 5060 Ti.
 - "Just hide (don't learn)" is the old per-day noise flag. The line editor's "TV / music: hide this line" flags one line only and does not learn.
 - Voices only: instrumental music isn't recognised.
 
+**Splitting a mixed voice:** diarization sometimes lumps several quiet people into one voice (real case: Speaker_3 on 2026-09-30).
+- **Why not automatic:** on that day only 65 of Speaker_3's 194 lines were at least 1.5 s with no overlap. Blind clustering gave a silhouette of about 0.08, and 62 of the 65 lines matched no known profile confidently.
+- **What exists instead:** a seeded split plus a keyboard sort mode (the user's choice). It's reached through a "Split…" button in the Speakers panel and "Several people? Split…" in voice review, and opens `#split-dlg`.
+  - The user names up to 4 people and sorts lines longest first: keys 1–4 assign, S skips, Z goes back, Space replays, Enter accepts the suggestion. Each line auto-plays via `playSnip`.
+  - "Suggest the rest by voice" calls `POST /api/days/{date}/voice-split {speaker, seeds: {person: [{start,text}]}}` → `split_voice`. Each line of at least `SPLIT_MIN_SECONDS` is scored against each person's tagged lines (mean of the 3 closest) and their saved profile (minus this day's print of the mixed voice). The best one is suggested at `SPLIT_MATCH` 0.35 or more and `SPLIT_MARGIN` 0.05 or more; strong suggestions need 0.55 and 0.15.
+  - Save is one `replaceLines` (with Undo), then `voice-train` per person. Undo does not un-teach.
+- **Calibration:** on a scratch copy, Lily, Mia and Steve were merged into one fake voice and tagged by 3 lines each. 451 of 782 lines were suggested and 449 were right. With 6 tags each, 623 were suggested and 618 were right. These voices are clear, and quiet ones score lower.
+
 **Teaching voices from single lines:** moving a line to someone in the line editor adds it to a per-day tray (`localStorage` `teach:<date>`). "Teach voices…" opens `#teach-dlg`:
 - **Stage 1** `POST /api/days/{date}/voice-train {person, lines, remove}` → `train_lines`. Each line of `MIN_TRAIN_LINE_SECONDS` (2 s) or more with no overlap is embedded by `LineVoices`. That is only the community-1 wespeaker model, the same embedding space as the diarization centroids, cached per day by merged.wav mtime. The embeddings go into the transcript's `line_prints`, and each person gets one weighted-mean voiceprint per day with `label='lines'`. `process_day` carries `line_prints` over and calls `restore_line_prints` after `assign()`, so a re-transcribe keeps them.
 - **Stage 2** `POST /api/days/{date}/voice-similar {person}` → `similar_lines`: lines of the day scoring `LINE_MATCH_THRESHOLD` (0.45) or more against the person, and at least `LINE_MATCH_MARGIN` (0.2) above their current speaker. Lines scoring 0.6 or more come pre-ticked. Ticked lines move through `replaceLines`; moved suggestions are not trained on.
