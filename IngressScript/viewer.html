@@ -474,6 +474,17 @@
   .vr-snip .tx { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
   .vr-sect { margin: 6px 0 0; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
   @media (max-width: 640px) { .vr-body { grid-template-columns: 1fr; } }
+  /* Teach voices: lines moved to someone collect in a tray; one dialog teaches and finds similar lines */
+  .teach-tray { position: fixed; right: 16px; bottom: 16px; z-index: 30; display: flex; gap: 8px; align-items: center;
+    padding: 8px 10px 8px 14px; border-radius: 999px; background: var(--surface); border: 1px solid color-mix(in srgb, var(--accent) 50%, transparent);
+    box-shadow: 0 6px 24px rgba(0,0,0,.25); font-size: 13.5px; max-width: calc(100% - 32px); }
+  .teach-tray .x { border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 16px; padding: 0 4px; }
+  .tl-row { display: flex; gap: 6px; align-items: flex-start; }
+  .tl-row input { margin-top: 7px; flex: none; }
+  .tl-row .vr-snip { flex: 1; min-width: 0; }
+  .tl-row.off { opacity: .55; }
+  .tl-why { font-size: 12px; color: var(--muted); white-space: nowrap; padding-top: 6px; }
+  .tl-score { font-size: 12px; color: var(--muted); white-space: nowrap; padding-top: 6px; font-variant-numeric: tabular-nums; }
   h4.sect { margin: 18px 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
   .clips { display: grid; gap: 12px; max-height: 58vh; overflow-y: auto; padding-right: 4px; }
   .clip { border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; background: var(--bg); }
@@ -757,6 +768,19 @@
     </div>
   </form>
 </dialog>
+
+<dialog id="teach-dlg" class="wide">
+  <form method="dialog">
+    <h3 id="teach-title">Teach voices</h3>
+    <p class="muted" style="margin:0 0 12px" id="teach-intro"></p>
+    <div class="vr-list" id="teach-list"></div>
+    <div class="row">
+      <button class="btn" value="later" id="teach-later" title="Close; the moved lines stay in the tray">Not now</button>
+      <button class="btn primary" type="button" id="teach-go">Teach</button>
+    </div>
+  </form>
+</dialog>
+<div class="teach-tray hidden server-only" id="teach-tray"></div>
 
 <dialog id="merge-dlg">
   <form method="dialog">
@@ -1077,6 +1101,7 @@
     if (state.view === 'day') savePosition();
     state.view = 'home';
     state.date = null;
+    renderTeachTray();
     state.openToken++;
     audio.pause();
     $('app').classList.add('is-home');
@@ -1252,6 +1277,7 @@
     if (state.view === 'day') savePosition();
     state.view = 'people';
     state.date = null;
+    renderTeachTray();
     state.openToken++;
     audio.pause();
     $('app').classList.add('is-home');
@@ -1273,6 +1299,7 @@
     if (state.view === 'day') savePosition();
     state.view = 'overview';
     state.date = null;
+    renderTeachTray();
     state.openToken++;
     audio.pause();
     $('app').classList.add('is-home');
@@ -1713,7 +1740,7 @@
 
     $('title').textContent = longDate(date);
     document.title = `${shortDate(date)} · Recorder Playback`;
-    renderLibrary(); updateNav();
+    renderLibrary(); updateNav(); renderTeachTray();
 
     const ready = isReady();
     $('toolbar').classList.toggle('hidden', !ready);
@@ -1987,9 +2014,12 @@
       const b = el('button', 'speaker' + (state.hidden.has(spk) ? ' off' : ''));
       b.title = `${displayName(spk)}: ${fmtDur(talk[spk])} talking. Click to hide/show, double-click to rename everywhere`;
       const dot = el('span', 'dot'); dot.style.background = state.colors[spk];
-      const pct = total ? Math.round(talk[spk] / total * 100) : 0;
-      const bar = el('span', 'bar'); const fill = el('i'); fill.style.width = pct + '%'; fill.style.background = state.colors[spk]; bar.append(fill);
-      b.append(dot, el('span', 'name', displayName(spk)), el('span', 'pct', pct + '%'), el('span'), bar);
+Fix      const exact = total ? talk[spk] / total * 100 : 0;
+      const pct = Math.round(exact);
+      const bar = el('span', 'bar'); const fill = el('i');
+      fill.style.width = (talk[spk] > 0 ? Math.max(exact, 2) : 0) + '%';   // a little talk still shows a sliver
+      fill.style.background = state.colors[spk]; bar.append(fill);
+      b.append(dot, el('span', 'name', displayName(spk)), el('span', 'pct', pct || talk[spk] <= 0 ? pct + '%' : '<1%'), el('span'), bar);
       let clickTimer;
       b.onclick = () => {
         clearTimeout(clickTimer);
@@ -2024,6 +2054,7 @@
     names.filter(n => n !== spk).forEach(n => { const o = el('option', null, displayName(n)); o.value = n; everyone.append(o); });
     sel.append(everyone);
     const nw = el('option', null, 'New person…'); nw.value = '__new__'; sel.append(nw);
+    const hide = el('option', null, 'TV / music: hide this voice'); hide.value = '__hide__'; sel.append(hide);
     sel.value = spk;
     const input = el('input'); input.placeholder = 'Name, then Enter'; input.classList.add('hidden');
     const apply = name => {
@@ -2033,6 +2064,7 @@
     };
     sel.onchange = () => {
       if (sel.value === '__new__') { sel.classList.add('hidden'); input.classList.remove('hidden'); input.focus(); }
+      else if (sel.value === '__hide__') { sel.value = spk; hideVoice(spk); }
       else apply(sel.value);
     };
     input.onkeydown = e => {
@@ -2063,6 +2095,23 @@
       for (const c of v.candidates || []) if (c.name !== spk) best[c.name] = Math.max(best[c.name] || 0, c.score);
     }
     return Object.entries(best).map(([name, score]) => ({ name, score })).sort((a, b) => b.score - a.score);
+  }
+
+  // A TV show or music: flag all of this voice's lines on this day as noise (hidden, not counted)
+  async function hideVoice(spk) {
+    const date = state.date;
+    const post = body => api(`/api/days/${date}/voice-noise`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    let r;
+    try { r = await post({ speaker: spk, noise: true }); } catch (e) { toast(e.message); return; }
+    await openDay(date, { keepPosition: true });
+    if ($('voices-dlg').open) { state.reviewNamed.add(spk); renderVoiceReview(); }
+    toast(`${displayName(spk)} hidden as TV / music (${plural(r.changed.length, 'line')})`, { action: 'Undo', onAction: async () => {
+      try { await post({ speaker: spk, noise: false, lines: r.changed }); } catch (e) { toast(e.message); return; }
+      if (state.date === date) await openDay(date, { keepPosition: true });
+      if ($('voices-dlg').open) { state.reviewNamed.delete(spk); renderVoiceReview(); }
+      toast('Undone'); refreshLibrary();
+    } });
+    refreshLibrary();
   }
 
   async function relabelVoice(from, to) {
@@ -2294,7 +2343,11 @@
         pen.title = 'Edit this line'; pen.setAttribute('aria-label', 'Edit this line');
         pen.append(svg('<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>'));
         pen.onclick = () => openEditor(s, row);
-        row.append(pen);
+        const cut = el('button', 'line-btn edit');
+        cut.title = 'Save this line as an MP3 clip'; cut.setAttribute('aria-label', 'Save this line as an MP3 clip');
+        cut.append(svg('<circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4 8.1 15.9M14.5 14.5 20 20M8.1 8.1 12 12"/>'));
+        cut.onclick = () => saveClip(s, cut);
+        row.append(cut, pen);
         if (s.noise) {
           const keep = el('button', 'line-btn keep');
           keep.title = 'Not noise: keep this line'; keep.setAttribute('aria-label', 'Keep this line');
@@ -2492,6 +2545,167 @@
   // ---------- Editing lines: words, who said it, split, join ----------
   const plainLine = x => ({ start: x.start, end: x.end, speaker: x.speaker, text: x.text, ...(x.edited ? { edited: true } : {}) });
 
+  // ---------- Teach voices from single lines ----------
+  // Lines moved to someone in the editor collect in a tray (per day, kept in this browser). One dialog then
+  // 1) teaches each person's voice from the ticked lines, 2) offers other lines of the day that sound like them.
+  const TEACH_MIN = 2;   // seconds; the server won't learn from shorter lines (too little audio)
+  const teachKey = date => 'teach:' + date;
+  const teachItems = (date = state.date) => date ? store.get(teachKey(date), []) : [];
+  const sameLine = (a, b) => Math.abs(a.start - b.start) < 0.02 && a.text === b.text;
+
+  function addToTeach(item) {
+    const date = state.date;
+    // A line edited again replaces its earlier entry (same start time)
+    const items = teachItems(date).filter(x => Math.abs(x.start - item.start) >= 0.02);
+    if (!item.person.startsWith('Unknown')) items.push(item);
+    store.set(teachKey(date), items);
+    renderTeachTray();
+  }
+
+  function renderTeachTray() {
+    const tray = $('teach-tray');
+    const items = state.view === 'day' ? teachItems() : [];
+    tray.classList.toggle('hidden', !items.length);
+    if (!items.length) { tray.replaceChildren(); return; }
+    const people = [...new Set(items.map(x => x.person))];
+    const open = btn('Teach voices…', 'small primary', () => openTeach());
+    open.type = 'button';
+    const x = el('button', 'x', '×'); x.type = 'button';
+    x.title = 'Forget these moved lines (nothing is taught)'; x.setAttribute('aria-label', x.title);
+    x.onclick = () => { store.set(teachKey(state.date), []); renderTeachTray(); };
+    tray.replaceChildren(el('span', null, `${plural(items.length, 'line')} moved to ${people.map(displayName).join(', ')}`), open, x);
+  }
+
+  // One row: [checkbox] [▶ time text] [note]
+  function teachRow(seg, { checked, disabled, note, cls }) {
+    const row = el('label', 'tl-row' + (disabled ? ' off' : ''));
+    const cb = el('input'); cb.type = 'checkbox'; cb.checked = checked && !disabled; cb.disabled = disabled;
+    const b = el('button', 'vr-snip'); b.type = 'button'; b.title = 'Play this line';
+    b.append(svg(ICONS.play), el('span', 'tm', clockAt(seg.start) || fmt(seg.start)), el('span', 'tx', seg.text));
+    b.onclick = e => { e.preventDefault(); playSnip(seg, b); };
+    row.append(cb, b);
+    if (note) row.append(el('span', cls || 'tl-why', note));
+    row.cb = cb; row.seg = seg;
+    return row;
+  }
+
+  const teach = { stage: 'learn', groups: [] };   // groups: [{person, rows, card, sugg}]
+
+  function openTeach() {
+    if (!state.server || !isReady()) return;
+    const items = teachItems();
+    const byPerson = {};
+    for (const it of items) (byPerson[it.person] ||= []).push(it);
+    teach.stage = 'learn';
+    teach.groups = Object.entries(byPerson).map(([person, its]) => {
+      const card = el('div', 'vr');
+      const head = el('div', 'vr-head');
+      const dot = el('span', 'dot'); dot.style.background = state.colors[person] || 'var(--muted)';
+      head.append(dot, el('span', 'nm', displayName(person)), el('span', 'meta', plural(its.length, 'line') + ' moved to them'));
+      card.append(head, el('div', 'vr-sect', 'Learn their voice from these lines'));
+      const list = el('div', 'vr-snips');
+      const rows = its.map(it => {
+        const seg = state.segments.find(s => sameLine(s, it)) || it;
+        const short = seg.end - seg.start < TEACH_MIN;
+        const stillThem = seg.speaker === undefined || seg.speaker === person;
+        const r = teachRow(seg, {
+          checked: true, disabled: short || !stillThem,
+          note: short ? 'too short to learn from' : !stillThem ? `now ${displayName(seg.speaker)}` : `${(seg.end - seg.start).toFixed(1)}s`,
+        });
+        list.append(r);
+        return r;
+      });
+      card.append(list);
+      return { person, rows, card, sugg: [] };
+    });
+    $('teach-title').textContent = `Teach voices · ${shortDate(state.date)}`;
+    $('teach-intro').textContent = 'Ticked lines are added to each person’s voice profile, so new days recognise them. '
+      + 'Next, you’ll see other lines from this day that sound like them.';
+    $('teach-list').replaceChildren(...teach.groups.map(g => g.card));
+    $('teach-go').textContent = 'Teach and find similar lines';
+    $('teach-go').disabled = false;
+    $('teach-dlg').showModal();
+  }
+
+  async function teachGo() {
+    const go = $('teach-go');
+    const date = state.date;
+    if (teach.stage === 'learn') {
+      go.disabled = true; go.textContent = 'Teaching… (first time loads the voice model)';
+      const taught = [];   // for undo
+      for (const g of teach.groups) {
+        const lines = g.rows.filter(r => r.cb.checked).map(r => ({ start: r.seg.start, text: r.seg.text }));
+        if (!lines.length) continue;
+        try {
+          const r = await api(`/api/days/${date}/voice-train`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ person: g.person, lines }) });
+          if (r.trained.length) taught.push({ person: g.person, lines: r.trained });
+        } catch (e) { toast(e.message); go.disabled = false; go.textContent = 'Try again'; return; }
+      }
+      // Taught (or deliberately unticked) lines leave the tray
+      store.set(teachKey(date), []);
+      renderTeachTray();
+      if (taught.length) toast(`Taught ${taught.map(t => `${displayName(t.person)} (${plural(t.lines.length, 'line')})`).join(', ')}`, { action: 'Undo', onAction: async () => {
+        for (const t of taught) {
+          try { await api(`/api/days/${date}/voice-train`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ person: t.person, lines: t.lines, remove: true }) }); } catch (e) { toast(e.message); return; }
+        }
+        toast('Voice teaching undone');
+      } });
+      // Stage 2: lines elsewhere on the day that sound like each person
+      teach.stage = 'similar';
+      go.textContent = 'Looking for similar lines…';
+      for (const g of teach.groups) {
+        g.card.querySelectorAll('.vr-sect, .vr-snips').forEach(n => n.remove());
+        g.card.append(el('div', 'vr-sect', `Other lines that sound like ${displayName(g.person)}`));
+        const list = el('div', 'vr-snips'); list.append(el('div', 'note', 'Listening…'));
+        g.card.append(list);
+        let found = [];
+        try {
+          found = (await api(`/api/days/${date}/voice-similar`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ person: g.person }) })).lines;
+        } catch (e) { list.replaceChildren(el('div', 'note', e.message)); continue; }
+        g.sugg = found.map(f => {
+          const seg = state.segments.find(s => sameLine(s, f));
+          return seg && teachRow(seg, { checked: f.strong, cls: 'tl-score',
+            note: `${Math.round(f.score * 100)}% · now ${displayName(seg.speaker)}` });
+        }).filter(Boolean);
+        list.replaceChildren(...(g.sugg.length ? g.sugg : [el('div', 'note', 'No other lines on this day sound clearly like them.')]));
+      }
+      const n = teach.groups.reduce((a, g) => a + g.sugg.length, 0);
+      $('teach-intro').textContent = n
+        ? 'Play any line to check. Strong matches are ticked; ticked lines move to that person (this day only).'
+        : 'Done. Nothing else on this day sounds clearly like them.';
+      go.disabled = false;
+      go.textContent = n ? 'Move ticked lines' : 'Close';
+      return;
+    }
+    // Stage 2 → move ticked suggestions (a normal edit, with Undo)
+    stopSnip();
+    const old = [], neu = [];
+    for (const g of teach.groups) for (const r of g.sugg) {
+      if (r.cb.checked && !old.includes(r.seg)) { old.push(r.seg); neu.push({ ...r.seg, speaker: g.person, edited: true }); }
+    }
+    $('teach-dlg').close();
+    if (old.length) replaceLines(old, neu, `Moved ${plural(old.length, 'line')}`);
+  }
+  $('teach-go').addEventListener('click', teachGo);
+  $('teach-dlg').addEventListener('close', stopSnip);
+  $('teach-later').addEventListener('click', stopSnip);
+
+  // Scissors: cut one line out of the original recording as an MP3 in <day>/clips/
+  async function saveClip(s, btn) {
+    btn.disabled = true;
+    try {
+      const r = await api(`/api/days/${state.date}/clip`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ start: s.start, end: s.end, text: s.text }),
+      });
+      toast(`Clip saved (${r.seconds}s): ${r.path}`);
+    } catch (e) { toast(e.message); }
+    btn.disabled = false;
+  }
+
   // Swap `old` lines for `neu` lines (edit / speaker / split / join), instantly, saved, with Undo
   async function replaceLines(old, neu, msg) {
     const date = state.date;
@@ -2546,6 +2760,7 @@
       if (text === s.text && sp === s.speaker) { close(); return; }
       replaceLines([s], [{ ...s, text, speaker: sp, edited: true }],
         sp !== s.speaker && text === s.text ? `Moved to ${displayName(sp)}` : 'Line saved');
+      if (sp !== s.speaker) addToTeach({ start: s.start, end: s.end, text, person: sp });
     };
     const split = () => {
       const text = ta.value, pos = ta.selectionStart;

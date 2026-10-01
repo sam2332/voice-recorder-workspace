@@ -41,6 +41,7 @@ DB_PATH = Path(os.getenv("SPEAKER_DB", SCRIPT_DIR / "speaker_memory.db"))
 HF_TOKEN = os.getenv("HF_TOKEN")   # HuggingFace token for pyannote models
 LANGUAGE = os.getenv("LANGUAGE") or None  # e.g. "en"; unset = auto-detect from the first 30s
 MIN_RECORDING_SECONDS = 3.0        # Skip accidental taps / clicks
+CLIP_PAD_SECONDS = 0.4             # Extra audio kept either side of a saved clip so no word is cut off
 
 # Speaker detection. Voiceprints are the diarization pipeline's own per-speaker centroids
 # (wespeaker embeddings averaged over each speaker's clean, non-overlapping speech).
@@ -928,6 +929,181 @@ def teach_voice(date: str, old: str, new: str, labels: list[str] | None = None) 
     return [v["label"] for v in targets], learned
 
 
+# --- LINE VOICEPRINTS (teach a voice from single lines the user moved to someone) ---
+# Same wespeaker model the diarization centroids come from, so line embeddings score directly against
+# stored voiceprints. Measured on the real 2026-10-01 day: lines of 2 s+ score 0.6-0.9 against their own
+# person; ~1 s lines are unreliable (0.2-0.5), so they are never learned from.
+# Test (scratch copy of 2026-10-01): 15 of Kenzie's lines moved to Lily. At 0.6/0.08 it found 6, all right;
+# at 0.45/0.2 it found 11 plus 1 wrong; other people got no suggestions. The user reviews each one, so the
+# looser setting is used and only lines at LINE_STRONG_MATCH or above come pre-ticked.
+MIN_TRAIN_LINE_SECONDS = 2.0       # Shorter lines are too little audio to learn a voice from
+LINE_MATCH_THRESHOLD = 0.45        # A line "sounds like" a person at or above this similarity...
+LINE_MATCH_MARGIN = 0.2            # ...and this much closer to them than to whoever it's assigned to now
+LINE_STRONG_MATCH = 0.6            # Pre-ticked in the viewer
+MAX_LINE_SUGGESTIONS = 40
+
+
+class LineVoices:
+    """Loads only the speaker-embedding model (small, ~2 s) on first use and embeds single lines of a day.
+    Embeddings are cached per day until merged.wav changes."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.model = None
+        self.torch = None
+        self.cache: dict[str, tuple[float, dict]] = {}   # date -> (merged.wav mtime, {(start, end): unit emb})
+
+    def _load(self):
+        if self.model is None:
+            import torch
+            from pyannote.audio.pipelines.speaker_verification import PretrainedSpeakerEmbedding
+            warnings.filterwarnings("ignore", message=".*torchcodec.*")
+            self.torch = torch
+            self.model = PretrainedSpeakerEmbedding(
+                {"checkpoint": "pyannote/speaker-diarization-community-1", "subfolder": "embedding"},
+                token=HF_TOKEN, device=torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+
+    def embed(self, date: str, spans: list[tuple[float, float]]) -> dict[tuple[float, float], np.ndarray]:
+        """Unit embeddings for (start, end) spans of the day's merged.wav (seconds)."""
+        from scipy.io import wavfile
+        wav = day_dir(date) / "merged.wav"
+        if not wav.is_file():
+            raise FileNotFoundError(f"No merged audio for {date}; re-transcribe the day first")
+        with self.lock:
+            self._load()
+            mtime = wav.stat().st_mtime
+            if self.cache.get(date, (None,))[0] != mtime:
+                self.cache[date] = (mtime, {})
+            known = self.cache[date][1]
+            sr, data = wavfile.read(wav, mmap=True)
+            for a, b in spans:
+                key = (round(a, 2), round(b, 2))
+                if key in known:
+                    continue
+                piece = np.asarray(data[int(a * sr):int(b * sr)], np.float32) / 32768.0
+                if len(piece) < sr // 2:
+                    continue
+                with self.torch.inference_mode():
+                    known[key] = unit(self.model(self.torch.from_numpy(piece)[None, None, :])[0].astype(np.float32))
+            return {(round(a, 2), round(b, 2)): known[(round(a, 2), round(b, 2))]
+                    for a, b in spans if (round(a, 2), round(b, 2)) in known}
+
+
+line_voices = LineVoices()
+
+
+def _same_line(a: dict, b: dict) -> bool:
+    return abs(a["start"] - b["start"]) < 0.02 and a["text"] == b["text"]
+
+
+def _store_line_print(conn, date: str, person: str, entries: list[dict]):
+    """One voiceprint per person per day built from their taught lines (mean of the line embeddings,
+    weighted by length), under label 'lines', so many short lines don't crowd out other days' prints."""
+    row = conn.execute("SELECT id FROM speakers WHERE name = ?", (person,)).fetchone()
+    spk_id = row[0] if row else conn.execute("INSERT INTO speakers (name, sample_count) VALUES (?, 0)", (person,)).lastrowid
+    conn.execute("DELETE FROM voiceprints WHERE speaker_id = ? AND day = ? AND label = 'lines'", (spk_id, date))
+    if entries:
+        w = np.array([e["seconds"] for e in entries], np.float32)
+        emb = unit((np.array([e["embedding"] for e in entries], np.float32) * w[:, None]).sum(0))
+        conn.execute("DELETE FROM voiceprints WHERE speaker_id = ? AND day = 'legacy'", (spk_id,))
+        conn.execute("INSERT INTO voiceprints (speaker_id, embedding, seconds, day, created, label) "
+                     "VALUES (?, ?, ?, ?, ?, 'lines')", (spk_id, emb.tobytes(), float(w.sum()), date, time.time()))
+    conn.execute("""DELETE FROM voiceprints WHERE speaker_id = ? AND id NOT IN (
+                        SELECT id FROM voiceprints WHERE speaker_id = ? ORDER BY created DESC LIMIT ?)""",
+                 (spk_id, spk_id, MAX_VOICEPRINTS))
+    conn.execute("UPDATE speakers SET sample_count = (SELECT COUNT(*) FROM voiceprints WHERE speaker_id = ?) "
+                 "WHERE id = ?", (spk_id, spk_id))
+
+
+def restore_line_prints(date: str, prints: list[dict]):
+    """Re-store the 'lines' voiceprints of a day (after re-transcribing wiped the day's prints)."""
+    conn = init_db()
+    try:
+        for who in {p["person"] for p in prints}:
+            _store_line_print(conn, date, who, [p for p in prints if p["person"] == who])
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def train_lines(date: str, person: str, lines: list[dict], remove: bool = False) -> dict:
+    """Teach (or, with remove=True, un-teach) `person`'s voice from specific lines of a day.
+    Taught lines are kept in the transcript's `line_prints`, so the day's 'lines' voiceprint can be rebuilt.
+    Lines under MIN_TRAIN_LINE_SECONDS or with someone talking over them are skipped."""
+    if person.startswith("Unknown"):
+        raise ValueError("Give the voice a name before teaching it")
+    path = transcript_path(date)
+    skipped, todo = [], []
+    if not remove:
+        with TRANSCRIPT_LOCK:
+            segs = json.loads(path.read_text(encoding="utf-8")).get("segments", [])
+        for l in lines:
+            seg = next((s for s in segs if _same_line(s, l)), None)
+            if not seg:
+                skipped.append({**l, "why": "line not found"})
+            elif seg["end"] - seg["start"] < MIN_TRAIN_LINE_SECONDS:
+                skipped.append({**l, "why": "too short"})
+            elif seg.get("overlap") or seg.get("overlap_labels"):
+                skipped.append({**l, "why": "someone talks over it"})
+            else:
+                todo.append(seg)
+        embs = line_voices.embed(date, [(s["start"], s["end"]) for s in todo])
+    with TRANSCRIPT_LOCK:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        prints = [p for p in data.get("line_prints", []) if not any(_same_line(p, l) for l in (lines if remove else todo))]
+        added = []
+        for s in [] if remove else todo:
+            e = embs.get((round(s["start"], 2), round(s["end"], 2)))
+            if e is None:
+                skipped.append({"start": s["start"], "text": s["text"], "why": "no audio"})
+                continue
+            p = {"start": s["start"], "text": s["text"], "person": person, "seconds": round(s["end"] - s["start"], 2),
+                 "embedding": [round(float(x), 5) for x in e]}
+            prints.append(p)
+            added.append(p)
+        touched = {person} | {p["person"] for p in data.get("line_prints", []) if p not in prints}
+        data["line_prints"] = prints
+        write_transcript(path, data)
+    conn = init_db()
+    try:
+        for who in touched:
+            _store_line_print(conn, date, who, [p for p in prints if p["person"] == who])
+        forget_unused_speakers(conn, keep={person})
+        conn.commit()
+    finally:
+        conn.close()
+    return {"trained": [{"start": p["start"], "text": p["text"]} for p in added], "skipped": skipped}
+
+
+def similar_lines(date: str, person: str) -> list[dict]:
+    """Lines of the day (not already `person`'s) whose voice matches `person`'s profile, best first."""
+    conn = init_db()
+    try:
+        mem = VoiceMemory(); mem.conn = conn
+        people = {name: prints for name, prints in mem.people().values()}
+    finally:
+        conn.close()
+    if person not in people:
+        return []
+    data = load_transcript(transcript_path(date))
+    cand = [s for s in data.get("segments", [])
+            if s.get("speaker") != person and not s.get("noise") and not s.get("overlap")
+            and s["end"] - s["start"] >= MIN_TRAIN_LINE_SECONDS]
+    embs = line_voices.embed(date, [(s["start"], s["end"]) for s in cand])
+    out = []
+    for s in cand:
+        e = embs.get((round(s["start"], 2), round(s["end"], 2)))
+        if e is None:
+            continue
+        mine = VoiceMemory.score(e, people[person])
+        theirs = VoiceMemory.score(e, people[s["speaker"]]) if s["speaker"] in people else 0.0
+        if mine >= LINE_MATCH_THRESHOLD and mine >= theirs + LINE_MATCH_MARGIN:
+            out.append({"start": s["start"], "end": s["end"], "text": s["text"], "speaker": s["speaker"],
+                        "score": round(mine, 3), "current_score": round(theirs, 3),
+                        "strong": mine >= LINE_STRONG_MATCH})
+    return sorted(out, key=lambda x: -x["score"])[:MAX_LINE_SUGGESTIONS]
+
+
 # --- MAIN INGEST PIPELINE ---
 def setup_problems() -> list[str]:
     problems = []
@@ -1240,6 +1416,10 @@ class Engine:
             prior = names_from_previous(turns, previous["segments"]) if previous else {}
             prior = {l: n for l, n in prior.items() if l in voices}
             names, voice_info = self.memory.assign(date_key, voices, prior)
+            # assign() replaced the day's voiceprints; put back the ones taught from single lines
+            line_prints = previous.get("line_prints", []) if previous else []
+            if line_prints:
+                restore_line_prints(date_key, line_prints)
 
             # Where diarization heard a voice; Whisper text with no voice under it is invented
             res = 100   # 10 ms
@@ -1297,6 +1477,7 @@ class Engine:
                     "sources": describe_sources(files),
                     "segments": timeline,
                     "trashed": trashed,
+                    "line_prints": latest.get("line_prints", line_prints),   # incl. any taught while this ran
                     "voices_reviewed": False,   # the viewer opens the voice review the first time this day is opened
                     # Per voice: how sure the match was and who else it might be (viewer suggestions)
                     "voices": [{"name": names[l], "label": l, "seconds": round(voices[l][1], 1), **voice_info[l],
@@ -1459,6 +1640,29 @@ def relabel_speaker(date: str, old: str, new: str, lines: list[dict] | None = No
                 changed.append({"start": seg["start"], "text": seg["text"]})
         if changed and lines is None:
             rename_in_overlaps(data, old, new)   # whole voice renamed: its "talking over" tags follow
+        if changed:
+            write_transcript(path, data)
+        return changed
+
+
+def mark_speaker_noise(date: str, speaker: str, noise: bool, lines: list[dict] | None = None) -> list[dict]:
+    """Flag every line of one voice on ONE day as noise (a TV show, music...) or clear it again.
+    Returns the lines changed, so undo can pass them back as `lines`."""
+    path = transcript_path(date)
+    same = lambda a, b: abs(a["start"] - b["start"]) < 0.02 and a["text"] == b["text"]
+    with TRANSCRIPT_LOCK:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        changed = []
+        for seg in data.get("segments", []):
+            if seg.get("speaker") != speaker or bool(seg.get("noise")) == noise:
+                continue
+            if lines is not None and not any(same(seg, l) for l in lines):
+                continue
+            if noise:
+                seg["noise"] = True
+            else:
+                del seg["noise"]
+            changed.append({"start": seg["start"], "text": seg["text"]})
         if changed:
             write_transcript(path, data)
         return changed
@@ -2295,6 +2499,11 @@ def create_app(auto_process: bool = False, force: bool = False):
         items: list[dict]         # [{start, text}]
         new: list[dict] | None = None   # replace: the lines that take their place
 
+    class ClipBody(BaseModel):
+        start: float
+        end: float
+        text: str = ""
+
     class SettingsBody(BaseModel):
         setup_done: bool | None = None
         auto_transcribe: bool | None = None
@@ -2474,6 +2683,9 @@ def create_app(auto_process: bool = False, force: bool = False):
             ap = day_dir(date) / audio if audio else None
             data["audio_url"] = f"/audio/{date}/{audio}?v={int(ap.stat().st_mtime)}" if ap and ap.is_file() else None
             data["sources"] = transcript_sources(data)
+            # The viewer only needs which lines taught whom, not the 256-number embeddings
+            data["line_prints"] = [{"start": p["start"], "text": p["text"], "person": p["person"]}
+                                   for p in data.get("line_prints", [])]
             data["status"] = "ready"
         else:
             files = get_daily_batches(INPUT_DIR).get(date)
@@ -2536,6 +2748,46 @@ def create_app(auto_process: bool = False, force: bool = False):
             return {"changed": edit_lines(date, items, body.action, new)}
         except ValueError as e:
             raise HTTPException(409, str(e))
+
+    @app.post("/api/days/{date}/clip")
+    def save_clip(date: str, body: ClipBody):
+        """Cut [start, end] (seconds into the day) out of the ORIGINAL recording as an MP3 in <date>/clips/."""
+        check_date(date)
+        path = transcript_path(date)
+        if not path.is_file():
+            raise HTTPException(404, f"No transcript for {date}")
+        sources = [s for s in transcript_sources(load_transcript(path)) if "start" in s]
+        src = None
+        for s in sources:
+            if s["start"] <= body.start + 0.01:
+                src = s
+        if src is None:
+            raise HTTPException(400, "Can't tell which recording that line came from")
+        rec = recording_path(src["name"])
+        # Padding keeps the first and last word from being clipped; stay inside the one recording the line is in
+        a = max(0.0, body.start - src["start"] - CLIP_PAD_SECONDS)
+        b = min(src["duration"], body.end - src["start"] + CLIP_PAD_SECONDS)
+        if b - a < 0.2:
+            raise HTTPException(400, "That clip is too short")
+        clock = (src.get("recorded_at") or "00:00:00").split(":")
+        t = int(clock[0]) * 3600 + int(clock[1]) * 60 + int(clock[2]) + int(a)
+        words = re.sub(r"[^\w' -]+", "", body.text or "").split()
+        label = " ".join(words[:6]).strip()
+        stem = f"{date} {t // 3600:02d}-{t % 3600 // 60:02d}-{t % 60:02d}" + (f" {label}" if label else "")
+        out_dir = day_dir(date) / "clips"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out = out_dir / f"{stem}.mp3"
+        n = 2
+        while out.exists():
+            out = out_dir / f"{stem} ({n}).mp3"
+            n += 1
+        res = subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", f"{a:.3f}", "-t", f"{b - a:.3f}", "-i", str(rec),
+                              "-vn", "-ac", "1", "-codec:a", "libmp3lame", "-q:a", "2", str(out)],
+                             capture_output=True, text=True)
+        if res.returncode != 0 or not out.is_file():
+            out.unlink(missing_ok=True)
+            raise HTTPException(500, f"ffmpeg couldn't cut the clip: {res.stderr.strip()[-200:]}")
+        return {"name": out.name, "path": str(out), "seconds": round(b - a, 1)}
 
     @app.get("/api/speakers")
     def speakers():
@@ -2619,6 +2871,53 @@ def create_app(auto_process: bool = False, force: bool = False):
         log(f"{date}: '{body.old}' is '{new}' on this day ({len(changed)} lines)"
             + (f"; {new}'s voice profile learned from it" if learned else ""))
         return {"changed": changed, "labels": labels, "learned": learned}
+
+    class TrainBody(BaseModel):
+        person: str
+        lines: list[dict]          # [{start, text}]
+        remove: bool = False       # undo: forget these lines again
+
+    @app.post("/api/days/{date}/voice-train")
+    def voice_train(date: str, body: TrainBody):
+        check_date(date)
+        if not (transcript_path(date)).is_file():
+            raise HTTPException(404, f"No transcript for {date}")
+        lines = [{"start": float(l["start"]), "text": str(l["text"])} for l in body.lines if "start" in l and "text" in l]
+        try:
+            r = train_lines(date, body.person.strip(), lines, body.remove)
+        except (ValueError, FileNotFoundError) as e:
+            raise HTTPException(400, str(e))
+        log(f"{date}: {body.person}'s voice {'un-taught' if body.remove else 'taught'} from "
+            f"{len(lines if body.remove else r['trained'])} line(s)")
+        return r
+
+    class SimilarBody(BaseModel):
+        person: str
+
+    @app.post("/api/days/{date}/voice-similar")
+    def voice_similar(date: str, body: SimilarBody):
+        check_date(date)
+        if not (transcript_path(date)).is_file():
+            raise HTTPException(404, f"No transcript for {date}")
+        try:
+            return {"lines": similar_lines(date, body.person.strip())}
+        except FileNotFoundError as e:
+            raise HTTPException(400, str(e))
+
+    class VoiceNoiseBody(BaseModel):
+        speaker: str
+        noise: bool = True
+        lines: list[dict] | None = None   # only these lines (used by undo)
+
+    @app.post("/api/days/{date}/voice-noise")
+    def voice_noise(date: str, body: VoiceNoiseBody):
+        check_date(date)
+        if not (transcript_path(date)).is_file():
+            raise HTTPException(404, f"No transcript for {date}")
+        lines = [{"start": float(l["start"]), "text": str(l["text"])} for l in body.lines] if body.lines is not None else None
+        changed = mark_speaker_noise(date, body.speaker, body.noise, lines)
+        log(f"{date}: '{body.speaker}' {'hidden as noise' if body.noise else 'shown again'} ({len(changed)} lines)")
+        return {"changed": changed}
 
     class ReviewedBody(BaseModel):
         reviewed: bool = True
