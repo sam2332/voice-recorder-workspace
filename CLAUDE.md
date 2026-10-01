@@ -71,6 +71,16 @@ A 2.5-hour day takes about 4 minutes to diarize on the RTX 5060 Ti.
    Such lines get `"noise": true`. The viewer hides them by default, and they are excluded from talk time and the speaker count.
 7. **Save** `<date>_transcript.json` under `TRANSCRIPT_LOCK`, writing to a temp file and then renaming. It includes `speaker_hint`, which a later re-transcribe reuses, and `trashed`. New lines that overlap a trashed line by at least 50% are dropped (`overlaps_trashed`), so removed lines stay removed.
 
+**Real-data lessons (2026-10-02: a quiet morning, then a phone call). Test on real recordings, not only synthetic clips:**
+- **Language:** whisperx detects the language from the first 30 s; a near-silent start gave Norwegian and invented lines such as "Teksting av Nicolai Winther". The default setting is now `"en"` (the user records in English). With auto-detect, `detect_language` is given the 30 s window with the most speech energy.
+- **Invented text:** lines with less than `MIN_SPEECH_UNDER_LINE` (0.3) of their duration covered by diarization turns are flagged as noise (`voice_share`), and so is anything containing a phrase from `HALLUCINATIONS`. `fill_nearest=True` would otherwise give every invented line a speaker.
+- **Phantom people:** a voice with less than `MIN_VOICE_SECONDS` (20 s) of speech is never enrolled. It becomes "Unknown voice N" (one label per voice, not stored in the DB, excluded from People and pickers). `names_from_previous` ignores names starting with "Unknown".
+- **Matching:** an automatic match needs `MATCH_THRESHOLD` = 0.68; the old 0.55 produced false matches. Candidates scoring at least `SUGGEST_THRESHOLD` (0.45) are saved in the transcript as `voices: [{name, label, seconds, match, candidates}]`. The viewer shows them as "Recognised by voice · 80%" or "Maybe X? 46%", and as a "Suggested by voice" group in the dropdown.
+- **Speaker changes:** `split_by_speaker` only changes speaker at sentence-ending punctuation or after a gap of at least 0.5 s, which fixes "Oh, that's pretty" / "fancy." splits.
+- **Known weakness:** one-word back-channel replies ("Perfect.", "Yeah.") can land on the other speaker.
+- **Stale audio:** browsers cached the old 2-minute merged WAV after a day was rebuilt with more recordings. `audio_url` and `recordings` URLs now carry `?v=<mtime>`, and responses send `Cache-Control: no-cache`.
+- **Research:** DiariZen scores best among open diarizers, but needs Python 3.10, torch 2.1, a forked pyannote and non-commercial weights, so it was not adopted. pyannote community-1 plus the fixes above was the better trade-off.
+
 **Speakers and people:**
 - **Day-only relabel:** `relabel_speaker(date, old, new, lines=None)`, exposed as `POST /api/days/{date}/relabel`, changes the speaker on one day's lines (trashed lines included) and nothing else: no voiceprints, no other days. That was the user's choice for "who is this voice". Undo passes the exact `lines` returned, so a person who already existed on that day isn't relabelled too.
   - A later re-transcribe carries these names over through `names_from_previous`, at which point that day's voiceprint gets stored under the chosen name.

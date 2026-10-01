@@ -162,8 +162,43 @@
   .heat .sq.new { box-shadow: inset 0 0 0 1.5px var(--warn); }
   .heat .sq.today { outline: 1.5px solid var(--muted); outline-offset: 1px; }
   .heat .sq.future { visibility: hidden; }
+  .summary { margin: 18px 0 8px; border: 1px solid var(--border); border-radius: 16px; background: var(--surface);
+    box-shadow: var(--shadow); overflow: hidden; }
+  .summary-head { display: flex; align-items: center; gap: 10px; padding: 14px 18px; border-bottom: 1px solid var(--border);
+    background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 8%, var(--surface)), var(--surface)); }
+  .summary.collapsed .summary-head { border-bottom: 0; }
+  .summary-head h3 { margin: 0; font-size: 15px; display: flex; align-items: center; gap: 8px; }
+  .summary-head h3 svg { width: 18px; height: 18px; color: var(--accent); }
+  .summary-head .meta { font-size: 12px; color: var(--muted); flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .summary-head .icon-btn { width: 30px; height: 30px; }
+  .summary-head .icon-btn svg { width: 16px; height: 16px; transition: transform .15s; }
+  .summary.collapsed .summary-body { display: none; }
+  .summary.collapsed .chev { transform: rotate(-90deg); }
+  .summary-body { padding: 6px 22px 18px; }
+  .summary-body > p.lead { color: var(--muted); margin: 12px 0; }
+  .stale { display: flex; align-items: center; gap: 10px; margin: 12px 0 4px; padding: 8px 12px; border-radius: 10px; font-size: 13px;
+    background: color-mix(in srgb, var(--warn) 14%, transparent); color: var(--text); }
+  .stale span { flex: 1; }
+  .md { line-height: 1.6; font-size: 14.5px; }
+  .md h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--accent); margin: 20px 0 6px;
+    padding-bottom: 4px; border-bottom: 1px solid var(--border); }
+  .md h3 { font-size: 15px; margin: 14px 0 4px; }
+  .md h4 { font-size: 14px; margin: 10px 0 2px; color: var(--muted); }
+  .md p { margin: 6px 0; }
+  .md ul { margin: 4px 0; padding-left: 20px; }
+  .md ul ul { margin: 2px 0; }
+  .md li { margin: 3px 0; }
+  .md li.task { list-style: none; margin-left: -20px; display: flex; gap: 8px; align-items: flex-start; }
+  .md li.task input { margin-top: 5px; accent-color: var(--accent); flex: none; cursor: pointer; }
+  .md li.task.done > span { color: var(--muted); text-decoration: line-through; }
+  .md code { background: var(--surface-2); padding: 1px 5px; border-radius: 4px; font-size: .92em; }
+  .md .ref { border: 0; background: var(--accent-soft); color: var(--accent); border-radius: 999px; padding: 0 8px;
+    font-size: 11.5px; font-weight: 600; margin-left: 4px; cursor: pointer; white-space: nowrap; font-variant-numeric: tabular-nums; vertical-align: 1px; }
+  .md .ref:hover { background: var(--accent); color: #fff; }
   .speaker-row { margin-bottom: 6px; }
   .who-row { padding: 0 10px 0 32px; }
+  .who-note { font-size: 11.5px; color: var(--muted); margin-top: 3px; }
+  .who-row .maybe { margin-top: 5px; width: 100%; justify-content: center; border-style: dashed; color: var(--accent); }
   .who-row select, .who-row input { width: 100%; padding: 4px 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); font-size: 12.5px; color: var(--text); }
   details.person summary { display: flex; align-items: center; gap: 12px; cursor: pointer; list-style: none; }
   details.person summary::-webkit-details-marker { display: none; }
@@ -308,6 +343,8 @@
   .line-btn:hover { background: var(--danger-soft); color: var(--danger); }
   .line-btn.edit:hover { background: var(--accent-soft); color: var(--accent); }
   .edited-tag { font-size: 11px; font-style: italic; color: var(--muted); margin-left: 8px; }
+  .overlap-tag { font-size: 11px; font-weight: 600; color: var(--warn); margin-left: 8px; white-space: nowrap;
+    padding: 0 6px; border-radius: 999px; background: color-mix(in srgb, var(--warn) 14%, transparent); }
   .line-editor { flex: 1; display: grid; gap: 8px; padding: 4px 0 10px; }
   .line-editor textarea {
     width: 100%; resize: vertical; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--accent);
@@ -561,7 +598,7 @@
         <span id="banner-text"></span>
         <button class="btn small primary server-only" id="banner-btn">Re-transcribe</button>
       </div>
-      <div class="transcript" id="transcript"><div class="transcript-inner" id="transcript-inner"></div></div>
+      <div class="transcript" id="transcript"><div class="transcript-inner" id="summary-wrap"></div><div class="transcript-inner" id="transcript-inner"></div></div>
       <div class="pending-view hidden" id="pending"><div class="pending-inner" id="pending-inner"></div></div>
       <button class="btn jump hidden" id="jump">↓ Back to current line</button>
 
@@ -1382,7 +1419,10 @@
       catch (e) { toast(`Couldn't load ${shortDate(date)}: ${e.message}`); return; }
       if (token !== state.openToken) return;  // the user already picked another day
       // Everyone the voice database knows, for the line editor's "who said it" picker
-      api('/api/speakers').then(r => { state.allSpeakers = r.speakers; }).catch(() => {});
+      api('/api/speakers').then(r => {
+        state.allSpeakers = r.speakers;
+        if (state.date === date && state.view === 'day') renderSpeakers();   // fill the pickers' "Everyone" lists
+      }).catch(() => {});
     } else {
       data = state.files[date].data;
       fileAudio = state.files[date].audio;
@@ -1436,6 +1476,8 @@
     renderRecordings();
     renderStats();
     renderTimeline(); updateProgress(); updateNow();
+    if (ready) { if (state.summary?.date !== date) $('summary-wrap').replaceChildren(); loadSummary(date); }
+    else $('summary-wrap').replaceChildren();
     if (state.pendingSeek != null && isReady()) {
       const t = state.pendingSeek; state.pendingSeek = null;
       const jump = () => { seek(t); document.querySelector('.cue.active')?.scrollIntoView({ block: 'center' }); };
@@ -1574,7 +1616,7 @@
 
   // ---------- File mode (viewer.html opened from disk) ----------
   async function ingest(files) {
-    const jsons = files.filter(f => /\.json$/i.test(f.name) && !/\.sources\.json$/i.test(f.name));
+    const jsons = files.filter(f => /\.json$/i.test(f.name) && !/(\.sources|summary|clip_levels|settings)\.json$/i.test(f.name));
     const audios = files.filter(f => /\.(wav|mp3|m4a|ogg|flac)$/i.test(f.name) || f.type.startsWith('audio/'));
     if (!jsons.length) { toast('No transcript (.json) found in that selection.'); return; }
 
@@ -1585,7 +1627,10 @@
       if (!data || !Array.isArray(data.segments)) continue;
       const date = data.date || f.name.replace(/_transcript\.json$/i, '').replace(/\.json$/i, '');
       const wanted = data.audio ? data.audio.split(/[\\/]/).pop().toLowerCase() : null;
-      const match = audios.find(a => a.name.toLowerCase() === wanted)
+      // Days live in their own folders (processed_daily/2026-10-02/merged.wav): match within the folder
+      const folder = x => (x.relPath || x.webkitRelativePath || x.name).replace(/[^\\/]*$/, '');
+      const match = audios.find(a => folder(a) === folder(f) && a.name.toLowerCase() === wanted)
+        || (!folder(f) && audios.find(a => a.name.toLowerCase() === wanted))
         || audios.find(a => a.name.toLowerCase().startsWith(date.toLowerCase()))
         || (jsons.length === 1 && audios.length === 1 ? audios[0] : null);
       days[date] = { data: { ...data, status: 'ready' }, audio: match || null };
@@ -1699,8 +1744,18 @@
     const box = el('div', 'who-row');
     const sel = el('select'); sel.title = 'Who is this voice? (changes this day only)';
     sel.setAttribute('aria-label', `Who is ${displayName(spk)}?`);
-    const names = [...new Set([spk, ...(state.allSpeakers || []), ...Object.keys(state.colors)])].filter(n => n && n !== 'Unknown' || n === spk);
-    names.forEach(n => { const o = el('option', null, n === spk ? `${displayName(n)} (this voice)` : displayName(n)); o.value = n; sel.append(o); });
+    const names = [...new Set([spk, ...(state.allSpeakers || []), ...Object.keys(state.colors)])].filter(n => n && !n.startsWith('Unknown') || n === spk);
+    const sugg = voiceSuggestions(spk);
+    const self = el('option', null, `${displayName(spk)} (this voice)`); self.value = spk; sel.append(self);
+    if (sugg.length) {
+      // Closest known people by voice, most likely first
+      const g = el('optgroup'); g.label = 'Suggested by voice';
+      sugg.forEach(c => { const o = el('option', null, `${displayName(c.name)} · ${Math.round(c.score * 100)}% match`); o.value = c.name; g.append(o); });
+      sel.append(g);
+    }
+    const everyone = el('optgroup'); everyone.label = 'Everyone';
+    names.filter(n => n !== spk).forEach(n => { const o = el('option', null, displayName(n)); o.value = n; everyone.append(o); });
+    sel.append(everyone);
     const nw = el('option', null, 'New person…'); nw.value = '__new__'; sel.append(nw);
     sel.value = spk;
     const input = el('input'); input.placeholder = 'Name, then Enter'; input.classList.add('hidden');
@@ -1719,7 +1774,28 @@
     };
     input.onblur = () => { if (!input.classList.contains('hidden')) apply(''); };
     box.append(sel, input);
+    // How the name was decided, and a one-click "maybe" when we have a good guess
+    const v = (state.data?.voices || []).filter(x => x.name === spk);
+    const match = Math.max(0, ...v.map(x => x.match || 0));
+    if (match) box.append(el('div', 'who-note', `Recognised by voice · ${Math.round(match * 100)}% match`));
+    else if (sugg[0]) {
+      const maybe = el('button', 'btn small maybe', `Maybe ${displayName(sugg[0].name)}? ${Math.round(sugg[0].score * 100)}%`);
+      maybe.type = 'button';
+      maybe.title = `This voice sounds most like ${displayName(sugg[0].name)}. Click to use that name on this day.`;
+      maybe.onclick = () => relabelVoice(spk, sugg[0].name);
+      box.append(maybe);
+    }
     return box;
+  }
+
+  // Best voice-match guesses for a name on this day (from the transcript's per-voice candidates)
+  function voiceSuggestions(spk) {
+    const best = {};
+    for (const v of state.data?.voices || []) {
+      if (v.name !== spk) continue;
+      for (const c of v.candidates || []) if (c.name !== spk) best[c.name] = Math.max(best[c.name] || 0, c.score);
+    }
+    return Object.entries(best).map(([name, score]) => ({ name, score })).sort((a, b) => b.score - a.score);
   }
 
   async function relabelVoice(from, to) {
@@ -1794,6 +1870,11 @@
       row.append(cue);
       if (s.noise) cue.append(el('span', 'noise-tag', 'likely noise'));
       if (s.edited) cue.append(el('span', 'edited-tag', 'edited'));
+      if (s.overlap?.length) {
+        const ov = el('span', 'overlap-tag', `talking over: ${s.overlap.map(displayName).join(', ')}`);
+        ov.title = `${s.overlap.map(displayName).join(' and ')} ${s.overlap.length > 1 ? 'were' : 'was'} also talking during this line, so some words may be missing or belong to them`;
+        cue.append(ov);
+      }
       if (state.server) {
         const pen = el('button', 'line-btn edit');
         pen.title = 'Edit this line'; pen.setAttribute('aria-label', 'Edit this line');
@@ -1829,6 +1910,160 @@
     syncActive(true);
   }
 
+  // ---------- Day summary (local Ollama) ----------
+  async function loadSummary(date) {
+    if (!state.server || !date) { $('summary-wrap').replaceChildren(); return; }
+    let r;
+    try { r = await api(`/api/days/${date}/summary`); } catch { return; }
+    if (state.date !== date) return;
+    const wasBusy = state.summary?.date === date && ['queued', 'running'].includes(state.summary.status);
+    state.summary = { ...r, date };
+    renderSummary();
+    clearTimeout(state.summaryTimer);
+    if (['queued', 'running'].includes(r.status)) state.summaryTimer = setTimeout(() => loadSummary(date), 2500);
+    else if (wasBusy && r.status === 'ready') toast('Summary ready');
+    else if (wasBusy && r.status === 'failed') toast('The summary didn’t work; see the message above the transcript');
+  }
+
+  async function startSummary() {
+    const date = state.date;
+    try { await api(`/api/days/${date}/summary`, { method: 'POST' }); } catch (e) { toast(e.message); return; }
+    store.set('summaryOpen', true);
+    loadSummary(date);
+  }
+
+  function renderSummary() {
+    const wrap = $('summary-wrap');
+    const r = state.summary;
+    if (!state.server || !isReady() || !r || r.date !== state.date) { wrap.replaceChildren(); return; }
+    const open = store.get('summaryOpen', true);
+    const box = el('section', 'summary' + (open ? '' : ' collapsed'));
+    const head = el('div', 'summary-head');
+    const h = el('h3'); h.append(svg('<path d="M4 6h16M4 12h10M4 18h13"/>'), 'Summary');
+    const when = r.created ? new Date(r.created * 1000).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
+    head.append(h, el('span', 'meta', r.status === 'ready' ? `${r.model} · ${when}` : r.model || ''));
+    const busy = ['queued', 'running'].includes(r.status);
+    if (r.status === 'ready' && !busy) {
+      const copy = el('button', 'btn small', 'Copy');
+      copy.title = 'Copy the summary as Markdown';
+      copy.onclick = e => { e.stopPropagation(); navigator.clipboard.writeText(withTimes(r.markdown, r.refs)).then(() => toast('Summary copied')); };
+      const again = el('button', 'btn small', 'Regenerate');
+      again.onclick = e => { e.stopPropagation(); startSummary(); };
+      head.append(copy, again);
+    }
+    const chev = el('button', 'icon-btn'); chev.append(svg('<path d="m6 9 6 6 6-6"/>', 'chev'));
+    chev.title = open ? 'Collapse' : 'Expand'; chev.setAttribute('aria-label', chev.title);
+    head.append(chev);
+    head.style.cursor = 'pointer';
+    head.onclick = () => { store.set('summaryOpen', !open); renderSummary(); };
+    box.append(head);
+
+    const body = el('div', 'summary-body');
+    if (busy) {
+      body.append(progressBar(r.progress || 0, (r.label || 'Waiting') + '…', r.progress ? `${Math.round(r.progress * 100)}%` : ''),
+        el('p', 'note', 'Runs on this computer with Ollama. A long day takes a few minutes; you can keep listening meanwhile.'));
+    } else if (r.status === 'failed') {
+      const a = el('div', 'actions'); a.append(btn('Try again', 'primary small', startSummary));
+      body.append(el('div', 'error-box', r.error || 'Something went wrong'), a);
+    } else if (r.status === 'ready') {
+      if (r.outdated) {
+        const st = el('div', 'stale');
+        st.append(el('span', null, 'The transcript has changed since this summary was written.'), btn('Regenerate', 'small', startSummary));
+        body.append(st);
+      }
+      body.append(renderMarkdown(r.markdown, r.refs || {}));
+    } else {
+      body.append(el('p', 'lead', `Overview, conversations, shopping list, project ideas, to-dos and key facts for this day, written by ${r.model} on this computer.`));
+      const a = el('div', 'actions'); a.append(btn('Summarize this day', 'primary', startSummary));
+      body.append(a);
+    }
+    box.append(body);
+    wrap.replaceChildren(box);
+  }
+
+  // [L12] -> "9:43 AM" for copying the summary as plain Markdown
+  const withTimes = (md, refs) => md.replace(/\[(L\d+(?:\s*[-–,]\s*L?\d+)*)\]/g, (m, list) =>
+    '(' + list.split(/\s*,\s*/).map(part => part.split(/\s*[-–]\s*/).map(x => 'L' + x.replace(/^L/, ''))
+      .map(r => refs[r] !== undefined ? (clockAt(refs[r]) || fmt(refs[r])) : r).join('–')).join(', ') + ')');
+
+  // Small, safe Markdown renderer (headings, nested lists, task boxes, bold/italic/code) built as DOM nodes
+  function renderMarkdown(md, refs) {
+    const root = el('div', 'md');
+    const doneKey = 'summaryDone:' + state.date;
+    const done = new Set(store.get(doneKey, []));
+    const inline = (text, into) => {
+      const rx = /(\*\*[^*]+\*\*|\*[^*\s][^*]*\*|_[^_\s][^_]*_|`[^`]+`|\[L\d+(?:\s*[-–,]\s*L?\d+)*\])/g;
+      let pos = 0;
+      for (const m of text.matchAll(rx)) {
+        into.append(text.slice(pos, m.index));
+        const t = m[0];
+        if (t.startsWith('**')) into.append(el('strong', null, t.slice(2, -2)));
+        else if (t.startsWith('`')) into.append(el('code', null, t.slice(1, -1)));
+        else if (t.startsWith('[L')) {
+          for (const part of t.slice(1, -1).split(/\s*,\s*/)) {
+            // "L30" or a range "L30-L45": the chip plays from the start of it
+            const [r, last] = part.split(/\s*[-–]\s*/).map(x => 'L' + x.replace(/^L/, ''));
+            const at = refs[r];
+            if (at === undefined) continue;   // a tag the model made up: drop it
+            const b = el('button', 'ref', clockAt(at) || fmt(at));
+            b.title = last && refs[last] !== undefined ? `Play from here (${clockAt(at)}–${clockAt(refs[last])})` : 'Play from here';
+            b.onclick = () => { state.userScrolledAt = 0; seek(at, true); };
+            into.append(b);
+          }
+        } else into.append(el('em', null, t.slice(1, -1)));
+        pos = m.index + t.length;
+      }
+      into.append(text.slice(pos));
+    };
+    const stack = [{ indent: -1, node: root }];
+    let para = null;
+    for (const raw of md.replace(/\r/g, '').split('\n')) {
+      const line = raw.replace(/\s+$/, '');
+      if (!line.trim()) { para = null; continue; }
+      const head = /^(#{1,4})\s+(.*)$/.exec(line.trim());
+      const item = /^(\s*)[-*+]\s+(.*)$/.exec(line) || /^(\s*)\d+[.)]\s+(.*)$/.exec(line);
+      if (head) {
+        stack.length = 1; para = null;
+        const hn = el('h' + Math.min(4, Math.max(2, head[1].length)));   // ## sections, ### items
+        inline(head[2].replace(/\s*#+$/, ''), hn);
+        root.append(hn);
+      } else if (item) {
+        para = null;
+        const indent = item[1].replace(/\t/g, '  ').length;
+        while (stack.length > 1 && indent <= stack[stack.length - 1].indent) stack.pop();
+        let top = stack[stack.length - 1];
+        if (!top.list || indent > top.indent) {
+          const ul = el('ul');
+          (top.li || top.node).append(ul);
+          top = { indent, node: ul, list: ul };
+          stack.push(top);
+        }
+        const li = el('li');
+        const task = /^\[( |x|X)\]\s+(.*)$/.exec(item[2]);
+        if (task) {
+          // Shopping list / to-do boxes: ticks are remembered in this browser
+          const key = task[2].replace(/\[L[\d, L]+\]/g, '').trim().toLowerCase();
+          const cb = el('input'); cb.type = 'checkbox'; cb.checked = task[1] !== ' ' || done.has(key);
+          const span = el('span'); inline(task[2], span);
+          li.className = 'task' + (cb.checked ? ' done' : '');
+          cb.onchange = () => {
+            cb.checked ? done.add(key) : done.delete(key);
+            store.set(doneKey, [...done]);
+            li.classList.toggle('done', cb.checked);
+          };
+          li.append(cb, span);
+        } else inline(item[2], li);
+        top.list.append(li);
+        top.li = li;
+      } else {
+        stack.length = 1;
+        if (!para) { para = el('p'); root.append(para); } else para.append(' ');
+        inline(line.trim(), para);
+      }
+    }
+    return root;
+  }
+
   // ---------- Removing lines ----------
   function renderNoiseCtl(n) {
     $('noise-ctl').classList.toggle('hidden', !n);
@@ -1857,7 +2092,7 @@
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'replace', items: from.map(x => ({ start: x.start, text: x.text })), new: to }),
     });
-    try { await post(oldC, newC); }
+    try { await post(oldC, newC); loadSummary(date); }
     catch (e) { toast(`Couldn't save that: ${e.message}`); if (state.date === date) openDay(date, { keepPosition: true }); return; }
     toast(msg, { action: 'Undo', onAction: async () => {
       try { await post(newC, oldC); } catch (e) { toast(e.message); return; }
@@ -1943,7 +2178,7 @@
     const post = act => api(`/api/days/${date}/lines`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: act, items }),
     });
-    try { await post(action); }
+    try { await post(action); loadSummary(date); }
     catch (e) { toast(`Couldn't save that: ${e.message}`); if (state.date === date) openDay(date, { keepPosition: true }); return; }
     if (action === 'trash') {
       toast(segs.length > 1 ? `${segs.length} lines removed` : 'Line removed', {
@@ -2429,7 +2664,11 @@
 
   // Drag & drop (folders included), file mode only
   async function walk(entry, out) {
-    if (entry.isFile) { out.push(await new Promise((res, rej) => entry.file(res, rej))); return; }
+    if (entry.isFile) {
+      const f = await new Promise((res, rej) => entry.file(res, rej));
+      f.relPath = entry.fullPath;   // keep the folder: every day's audio is called merged.wav
+      out.push(f); return;
+    }
     if (entry.isDirectory) {
       const reader = entry.createReader();
       let batch;

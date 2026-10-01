@@ -45,7 +45,12 @@ MIN_RECORDING_SECONDS = 3.0        # Skip accidental taps / clicks
 # Speaker detection. Voiceprints are the diarization pipeline's own per-speaker centroids
 # (wespeaker embeddings averaged over each speaker's clean, non-overlapping speech).
 SAME_PERSON_THRESHOLD = 0.75       # Two of today's clusters this similar are one person, re-joined
-MATCH_THRESHOLD = 0.55             # Similarity needed to say "this is a known person" from another day
+MATCH_THRESHOLD = 0.68             # Similarity needed to name a voice automatically as a known person
+SUGGEST_THRESHOLD = 0.45           # Weaker matches are only offered as suggestions in the viewer
+MIN_VOICE_SECONDS = 20.0           # Voices with less speech than this are never enrolled as a new person
+MIN_SPEECH_UNDER_LINE = 0.3        # Lines with less detected voice under them than this are flagged as noise
+OVERLAP_MIN_SECONDS = 0.4          # Someone else talking at least this long during a line...
+OVERLAP_MIN_SHARE = 0.2            # ...or this share of it, tags the line "talking over: <name>"
 MAX_VOICEPRINTS = 40               # Stored voiceprints kept per person (oldest dropped)
 
 # Whisper voice-activity detection: lower = picks up quieter / more distant speech
@@ -66,6 +71,10 @@ NOISE_PHRASES = {"thank you", "thanks", "thank you very much", "thanks for watch
                  "you", "so", "mm", "mmm", "hmm", "um", "uh", "the end"}
 # Real words people say a lot; only treated as noise when they sit in rustle
 NOISE_IF_RUSTLE = {"okay", "ok", "oh", "ah", "bye", "yeah", "damn"}
+# Well-known Whisper inventions on silence (subtitle credits etc.): always noise
+HALLUCINATIONS = ("teksting av", "tekstet av", "untertitel", "subtitles by", "sous-titres", "amara.org",
+                  "thanks for watching", "thank you for watching", "please subscribe", "like and subscribe",
+                  "transcribed by", "transcription by", "copyright", "www.", ".com")
 GATED_MODELS = ["pyannote/speaker-diarization-community-1"]
 
 # V2026-08-20-06-18-54.MP3 / .WAV -> date 2026-08-20, recorded at 06:18:54
@@ -88,7 +97,7 @@ SETTINGS_PATH = Path(os.getenv("SETTINGS_PATH", DB_PATH.parent / "settings.json"
 DEFAULT_SETTINGS = {
     "setup_done": False,          # nothing is transcribed automatically until the user has been through setup
     "auto_transcribe": False,     # transcribe new / incomplete days in the background
-    "language": LANGUAGE or "",   # "" = detect
+    "language": LANGUAGE or "en",   # "" = detect
     "rustle_strength": RUSTLE_STRENGTH,
 }
 _settings_lock = threading.Lock()
@@ -344,14 +353,33 @@ def describe_sources(files: list[Path]) -> list[dict]:
     return sources
 
 
+# Layout: processed_daily/<YYYY-MM-DD>/{transcript.json, merged.wav, merged.sources.json, rustle.npy, summary.json}
+# plus processed_daily/clip_levels.json shared by all days.
+def day_dir(date: str) -> Path:
+    return OUTPUT_DIR / date
+
+
+def transcript_path(date: str) -> Path:
+    return day_dir(date) / "transcript.json"
+
+
+def all_transcripts() -> list[tuple[str, Path]]:
+    """(date, transcript path) for every processed day, oldest first."""
+    if not OUTPUT_DIR.is_dir():
+        return []
+    return [(d.name, d / "transcript.json") for d in sorted(OUTPUT_DIR.iterdir())
+            if d.is_dir() and DATE_RE.match(d.name) and (d / "transcript.json").is_file()]
+
+
 def rustle_mask_path(date_str: str) -> Path:
-    return OUTPUT_DIR / f"{date_str}_rustle.npy"
+    return day_dir(date_str) / "rustle.npy"
 
 
 def prepare_daily_audio(date_str: str, file_list: list[Path]) -> Path:
-    merged_path = OUTPUT_DIR / f"{date_str}_merged.wav"
+    day_dir(date_str).mkdir(parents=True, exist_ok=True)
+    merged_path = day_dir(date_str) / "merged.wav"
     # Sidecar records which recordings the WAV was built from, so new recordings trigger a rebuild
-    manifest = OUTPUT_DIR / f"{date_str}_merged.sources.json"
+    manifest = day_dir(date_str) / "merged.sources.json"
     mask_path = rustle_mask_path(date_str)
     # Rebuilt when the recordings, their levels, or the rustle setting change
     strength = setting("rustle_strength")
@@ -490,6 +518,8 @@ def rustle_share(mask: np.ndarray | None, start: float, end: float) -> float:
 
 def looks_like_noise(text: str, rustle: float, score: float | None) -> bool:
     """A transcript line that is most likely Whisper 'hearing' words in rustle or other noise."""
+    if any(h in text.lower() for h in HALLUCINATIONS):
+        return True
     words = re.sub(r"[^\w\s']", " ", text.lower()).split()
     phrase = " ".join(dict.fromkeys(words))  # "so so" -> "so"
     weak = score is not None and score < 0.5
@@ -751,9 +781,11 @@ class VoiceMemory:
             return row[0]
         return self.conn.execute("INSERT INTO speakers (name, sample_count) VALUES (?, 0)", (name,)).lastrowid
 
-    def assign(self, day: str, voices: dict[str, tuple[np.ndarray, float]], prior: dict[str, str]) -> dict[str, str]:
+    def assign(self, day: str, voices: dict[str, tuple[np.ndarray, float]], prior: dict[str, str]) -> tuple[dict, dict]:
         """Name today's voices. `voices` maps label -> (embedding, seconds spoken); `prior` maps
-        label -> name kept from an earlier transcript of this same day (so renames survive)."""
+        label -> name kept from an earlier transcript of this same day (so renames survive).
+        Returns (label -> name, label -> {"match", "candidates"}) where candidates are the closest
+        known people with their similarity, for the viewer to suggest."""
         self.conn = init_db()
         try:
             return self._assign(day, voices, prior)
@@ -761,7 +793,7 @@ class VoiceMemory:
             self.conn.close()
             self.conn = None
 
-    def _assign(self, day: str, voices: dict[str, tuple[np.ndarray, float]], prior: dict[str, str]) -> dict[str, str]:
+    def _assign(self, day: str, voices: dict[str, tuple[np.ndarray, float]], prior: dict[str, str]) -> tuple[dict, dict]:
         cur = self.conn
         # Re-transcribing a day replaces its voiceprints rather than counting it twice
         cur.execute("DELETE FROM voiceprints WHERE day = ?", (day,))
@@ -775,27 +807,46 @@ class VoiceMemory:
             taken.add(spk_id)
             log(f"      {label}: kept earlier name '{name}'")
 
+        # Every voice's closest known people, for suggestions in the viewer
+        scores = {label: sorted(((self.score(emb, prints), spk_id) for spk_id, (_, prints) in people.items()), reverse=True)
+                  for label, (emb, _) in voices.items()}
+        info = {label: {"match": None, "candidates": [{"name": people[i][0], "score": round(sc, 3)}
+                                                      for sc, i in scores[label][:4] if sc >= SUGGEST_THRESHOLD]}
+                for label in voices}
+
         # Best matches first, one person per voice (two voices can't both be the same known person)
-        pairs = sorted(((self.score(emb, prints), label, spk_id)
-                        for label, (emb, _) in voices.items() if label not in names
-                        for spk_id, (_, prints) in people.items()), reverse=True)
+        pairs = sorted(((sc, label, spk_id) for label in voices if label not in names for sc, spk_id in scores[label]),
+                       reverse=True)
         for score, label, spk_id in pairs:
             if label in names or spk_id in taken or score < MATCH_THRESHOLD:
                 continue
             names[label] = people[spk_id][0]
+            info[label]["match"] = round(score, 3)
             taken.add(spk_id)
             log(f"      {label}: matched '{names[label]}' (similarity {score:.2f})")
 
+        unknown = 0
         for label in sorted(voices, key=lambda l: -voices[l][1]):
-            if label not in names:
-                best = max((s for s, l, _ in pairs if l == label), default=None)
-                names[label] = self._unique_name()
-                self._speaker_id(names[label])
-                log(f"      {label}: new voice '{names[label]}'" + (f" (closest known {best:.2f})" if best else ""))
+            if label in names:
+                continue
+            best = info[label]["candidates"][0] if info[label]["candidates"] else None
+            if voices[label][1] < MIN_VOICE_SECONDS:
+                # Too little speech for a trustworthy new voiceprint: don't invent a person from it.
+                # Each still gets its own label so it can be named separately in the viewer.
+                unknown += 1
+                names[label] = f"Unknown voice {unknown}"
+                log(f"      {label}: only {voices[label][1]:.0f}s of speech; left as Unknown"
+                    + (f" (closest {best['name']} {best['score']:.2f})" if best else ""))
+                continue
+            names[label] = self._unique_name()
+            self._speaker_id(names[label])
+            log(f"      {label}: new voice '{names[label]}'" + (f" (closest {best['name']} {best['score']:.2f})" if best else ""))
 
         # Store today's voiceprints; keep only the most recent MAX_VOICEPRINTS per person
         now = time.time()
         for label, (emb, seconds) in voices.items():
+            if names[label].startswith("Unknown"):
+                continue
             spk_id = self._speaker_id(names[label])
             cur.execute("DELETE FROM voiceprints WHERE speaker_id = ? AND day = 'legacy'", (spk_id,))
             cur.execute("INSERT INTO voiceprints (speaker_id, embedding, seconds, day, created) VALUES (?, ?, ?, ?, ?)",
@@ -808,15 +859,15 @@ class VoiceMemory:
 
         # Re-transcribing can leave behind people who no longer appear anywhere; forget them
         in_use = set(names.values())
-        for path in OUTPUT_DIR.glob("*_transcript.json"):
-            if path.name != f"{day}_transcript.json":
+        for other, path in all_transcripts():
+            if other != day:
                 in_use |= {s.get("speaker") for s in load_transcript(path).get("segments", [])}
         for spk_id, name in cur.execute("SELECT id, name FROM speakers s WHERE NOT EXISTS "
                                         "(SELECT 1 FROM voiceprints v WHERE v.speaker_id = s.id)").fetchall():
             if name not in in_use:
                 cur.execute("DELETE FROM speakers WHERE id = ?", (spk_id,))
         cur.commit()
-        return names
+        return names, info
 
 
 # --- MAIN INGEST PIPELINE ---
@@ -919,7 +970,10 @@ def split_by_speaker(segments: list[dict], language: str) -> list[dict]:
             if r["end"] is None:
                 r["end"] = r["start"]
             tiny = len(r["words"]) <= 2 and r["end"] - r["start"] < 1.0
-            if merged and (tiny or merged[-1]["speaker"] == r["speaker"]):
+            # A real change of speaker almost always lands at the end of a sentence or after a pause;
+            # anything else is diarization jitter (e.g. "Oh, that's pretty" / "fancy.")
+            boundary = bool(merged) and (re.search(r"[.?!]$", merged[-1]["words"][-1]) or r["start"] - merged[-1]["end"] >= 0.5)
+            if merged and (tiny or merged[-1]["speaker"] == r["speaker"] or not boundary):
                 merged[-1]["words"] += r["words"]
                 merged[-1]["scores"] += r["scores"]
                 merged[-1]["end"] = max(merged[-1]["end"], r["end"])
@@ -942,7 +996,7 @@ def names_from_previous(turns: list[tuple[float, float, str]], old_segments: lis
     'Kenzie' survive) for voices that clearly line up with the same stretches of speech."""
     import bisect
     old = sorted((s["start"], s["end"], s["speaker"]) for s in old_segments
-                 if s.get("speaker") and s["speaker"] != "Unknown")
+                 if s.get("speaker") and not s["speaker"].startswith("Unknown"))
     starts = [o[0] for o in old]
     overlap: dict[tuple[str, str], float] = {}
     total: dict[str, float] = {}
@@ -982,6 +1036,37 @@ class Engine:
             vad_options={"vad_onset": VAD_ONSET, "vad_offset": VAD_OFFSET})
         self.diarize_model = DiarizationPipeline(token=HF_TOKEN, device=self.device)
 
+    def diarize(self, audio: np.ndarray, hint: dict, report):
+        """Run pyannote directly (not via whisperx) to get both of its answers:
+        - speaker_diarization: who is talking, overlaps included (several people at once)
+        - exclusive_speaker_diarization: exactly one speaker at every moment, which pyannote recommends
+          for matching words to speakers.
+        Returns (overlap turns, exclusive turns, label -> embedding)."""
+        import pandas as pd
+        ranges = {"segmentation": (0.0, 50.0), "embeddings": (50.0, 99.0)}
+        last = [0.0]
+
+        def hook(step_name, step_artifact, file=None, total=None, completed=None):
+            if total and completed is not None:
+                a, b = ranges.get(step_name, (0.0, 99.0))
+                pct = a + min(completed / total, 1.0) * (b - a)
+                if pct > last[0]:
+                    last[0] = pct
+                    report(pct)
+
+        data = {"waveform": self.torch.from_numpy(audio[None, :]), "sample_rate": SAMPLE_RATE}
+        out = self.diarize_model.model(data, hook=hook, **hint)
+        report(100)
+
+        def frame(ann):
+            return pd.DataFrame([(t.start, t.end, spk) for t, _, spk in ann.itertracks(yield_label=True)],
+                                columns=["start", "end", "speaker"])
+
+        labels = out.speaker_diarization.labels()
+        emb = ({spk: out.speaker_embeddings[i] for i, spk in enumerate(labels)}
+               if out.speaker_embeddings is not None else {})
+        return frame(out.speaker_diarization), frame(out.exclusive_speaker_diarization), emb
+
     def process_day(self, date_key: str, files: list[Path], progress=None, hint: dict | None = None) -> Path:
         """Transcribe one day. `progress(fraction, label)` is called as work advances.
         `hint` may hold num_speakers, or min_speakers / max_speakers, to guide speaker detection."""
@@ -990,7 +1075,7 @@ class Engine:
         total = sum(weights.values())
         done = {"w": 0}
 
-        json_out = OUTPUT_DIR / f"{date_key}_transcript.json"
+        json_out = transcript_path(date_key)
         previous = load_transcript(json_out) if json_out.exists() else None
         if hint is None:  # re-transcribing remembers the hint given last time
             hint = (previous or {}).get("speaker_hint") or {}
@@ -1021,6 +1106,17 @@ class Engine:
             sources = describe_sources(files)
             language = setting("language") or None
             self.whisper_model.tokenizer = None   # whisperx would otherwise reuse the previous day's language
+            if not language:
+                # Whisper guesses the language from 30 s of audio; quiet or noisy openings make it guess
+                # wrong (e.g. Norwegian), so give it the 30 s with the most speech energy in the day
+                win = 30 * SAMPLE_RATE
+                frame = SAMPLE_RATE // 2
+                n = len(audio) // frame
+                energy = np.sqrt((audio[:n * frame].reshape(-1, frame) ** 2).mean(1)) if n else np.zeros(1)
+                per_win = np.convolve(energy, np.ones(60), mode="valid") if len(energy) >= 60 else energy
+                start = int(np.argmax(per_win)) * frame if len(per_win) else 0
+                language = self.whisper_model.detect_language(audio[start:start + win])
+                log(f"      language detected: {language} (from {start / SAMPLE_RATE / 60:.1f} min in)")
             segments, total_secs, done_secs = [], sum(s["duration"] for s in sources) or 1, 0.0
             for src in sources:
                 chunk = audio[int(src["start"] * SAMPLE_RATE):int((src["start"] + src["duration"]) * SAMPLE_RATE)]
@@ -1031,7 +1127,7 @@ class Engine:
                     part = self.whisper_model.transcribe(
                         chunk, batch_size=16, language=language,
                         progress_callback=lambda p, base=done_secs, d=src["duration"]: report((base + d * p / 100) / total_secs * 100))
-                    language = language or part["language"]   # the first clip decides for the rest of the day
+                    language = language or part["language"]
                     for seg in part["segments"]:
                         seg["start"] += src["start"]
                         seg["end"] += src["start"]
@@ -1051,7 +1147,7 @@ class Engine:
             report = step("diarize")
             if hint:
                 log(f"      speaker hint: {hint}")
-            diarize_df, raw_emb = self.diarize_model(audio, return_embeddings=True, progress_callback=report, **hint)
+            diarize_df, exclusive_df, raw_emb = self.diarize(audio, hint, report)
             finish("diarize")
 
             report = step("save")
@@ -1063,13 +1159,15 @@ class Engine:
             else:
                 rep = same_person_groups(emb, SAME_PERSON_THRESHOLD, hint.get("min_speakers", 0))
             diarize_df["speaker"] = diarize_df["speaker"].map(lambda l: rep.get(l, l))
+            exclusive_df["speaker"] = exclusive_df["speaker"].map(lambda l: rep.get(l, l))
             voices: dict[str, tuple[np.ndarray, float]] = {}
             for label in set(rep.values()):
                 members = [l for l in rep if rep[l] == label]
                 secs = sum(seconds[m] for m in members)
                 voices[label] = (unit(sum(emb[m] * seconds[m] for m in members)), secs)
 
-            result = whisperx.assign_word_speakers(diarize_df, result, fill_nearest=True)
+            # Words go to the one speaker pyannote is most sure of at that moment
+            result = whisperx.assign_word_speakers(exclusive_df if len(exclusive_df) else diarize_df, result, fill_nearest=True)
             lines = split_by_speaker(result["segments"], language)
 
             turns = list(zip(diarize_df.start, diarize_df.end, diarize_df.speaker))
@@ -1083,7 +1181,34 @@ class Engine:
                     del voices[label]
             prior = names_from_previous(turns, previous["segments"]) if previous else {}
             prior = {l: n for l, n in prior.items() if l in voices}
-            names = self.memory.assign(date_key, voices, prior)
+            names, voice_info = self.memory.assign(date_key, voices, prior)
+
+            # Where diarization heard a voice; Whisper text with no voice under it is invented
+            res = 100   # 10 ms
+            heard = np.zeros(int(len(audio) / SAMPLE_RATE * res) + 1, bool)
+            for a, b, _ in turns:
+                heard[int(a * res):int(b * res) + 1] = True
+
+            def voice_share(a, b):
+                seg = heard[int(a * res):max(int(b * res), int(a * res) + 1)]
+                return float(seg.mean()) if len(seg) else 0.0
+
+            # Who else was talking during a line (people talking over each other)
+            by_label: dict[str, list[tuple[float, float]]] = {}
+            for a, b, l in turns:
+                by_label.setdefault(l, []).append((a, b))
+
+            def talking_over(line):
+                a, b = line["start"], line["end"]
+                need = max(OVERLAP_MIN_SECONDS, OVERLAP_MIN_SHARE * (b - a))
+                others = []
+                for l, spans in by_label.items():
+                    if l == line["speaker"]:
+                        continue
+                    secs = sum(max(0.0, min(b, y) - max(a, x)) for x, y in spans if x < b and y > a)
+                    if secs >= need:
+                        others.append(names.get(l, "Unknown"))
+                return sorted(set(others))
 
             timeline = []
             for line in lines:
@@ -1091,8 +1216,12 @@ class Engine:
                     continue
                 seg = {"start": round(line["start"], 2), "end": round(line["end"], 2),
                        "speaker": names.get(line["speaker"], "Unknown"), "text": line["text"]}
-                if looks_like_noise(line["text"], rustle_share(mask, line["start"], line["end"]), line["score"]):
+                if looks_like_noise(line["text"], rustle_share(mask, line["start"], line["end"]), line["score"]) \
+                        or voice_share(line["start"], line["end"]) < MIN_SPEECH_UNDER_LINE:
                     seg["noise"] = True
+                over = talking_over(line)
+                if over and not seg.get("noise"):
+                    seg["overlap"] = over
                 timeline.append(seg)
 
             with TRANSCRIPT_LOCK:
@@ -1109,6 +1238,9 @@ class Engine:
                     "sources": describe_sources(files),
                     "segments": timeline,
                     "trashed": trashed,
+                    # Per voice: how sure the match was and who else it might be (viewer suggestions)
+                    "voices": [{"name": names[l], "label": l, "seconds": round(voices[l][1], 1), **voice_info[l]}
+                               for l in voices],
                 }, indent=2, ensure_ascii=False), encoding="utf-8")
                 tmp_out.replace(json_out)
             finish("save")
@@ -1123,7 +1255,7 @@ class Engine:
 
 def needs_processing(date_key: str, files: list[Path]) -> bool:
     """True if the day has no transcript, or recordings were added/changed since it was made."""
-    path = OUTPUT_DIR / f"{date_key}_transcript.json"
+    path = transcript_path(date_key)
     if not path.exists():
         return True
     data = load_transcript(path)
@@ -1187,7 +1319,7 @@ def edit_lines(date: str, items: list[dict], action: str, new: list[dict] | None
     action: 'trash' (remove; remembered so re-transcribing won't bring them back),
             'restore' (undo a trash), 'keep' (it was flagged as noise but is real speech), or
             'replace' (swap `items` for the lines in `new`: edits, speaker changes, split, join, undo)."""
-    path = OUTPUT_DIR / f"{date}_transcript.json"
+    path = transcript_path(date)
     same = lambda a, b: abs(a["start"] - b["start"]) < 0.02 and a["text"] == b["text"]
     with TRANSCRIPT_LOCK:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -1229,7 +1361,7 @@ def edit_lines(date: str, items: list[dict], action: str, new: list[dict] | None
 def relabel_speaker(date: str, old: str, new: str, lines: list[dict] | None = None) -> list[dict]:
     """Say who a voice is on ONE day: every line (or just `lines`) by `old` becomes `new`.
     Other days and the voice database are untouched. Returns the lines changed (for undo)."""
-    path = OUTPUT_DIR / f"{date}_transcript.json"
+    path = transcript_path(date)
     same = lambda a, b: abs(a["start"] - b["start"]) < 0.02 and a["text"] == b["text"]
     with TRANSCRIPT_LOCK:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -1246,16 +1378,15 @@ def relabel_speaker(date: str, old: str, new: str, lines: list[dict] | None = No
 def people_summary() -> list[dict]:
     """Everyone named in any transcript: the days and recordings they're in and how much they talked."""
     people: dict[str, dict] = {}
-    for path in sorted(OUTPUT_DIR.glob("*_transcript.json")) if OUTPUT_DIR.is_dir() else []:
+    for date, path in all_transcripts():
         try:
             data = load_transcript(path)
         except (OSError, json.JSONDecodeError):
             continue
-        date = data.get("date") or path.name.removesuffix("_transcript.json")
         sources = [s for s in data.get("sources", []) if isinstance(s, dict) and "start" in s]
         for seg in data.get("segments", []):
             name = seg.get("speaker")
-            if not name or name == "Unknown" or seg.get("noise"):
+            if not name or name.startswith("Unknown") or seg.get("noise"):
                 continue
             p = people.setdefault(name, {"name": name, "seconds": 0.0, "lines": 0, "days": {}})
             d = p["days"].setdefault(date, {"date": date, "seconds": 0.0, "lines": 0, "recordings": {}})
@@ -1292,7 +1423,7 @@ def people_summary() -> list[dict]:
 
 def has_edits(date: str) -> int:
     """How many lines of a day's transcript were edited by hand."""
-    path = OUTPUT_DIR / f"{date}_transcript.json"
+    path = transcript_path(date)
     return sum(1 for s in load_transcript(path).get("segments", []) if s.get("edited")) if path.exists() else 0
 
 
@@ -1350,7 +1481,7 @@ def rename_speaker_core(old: str, new: str, merge: bool = False) -> int:
     conn = init_db()
     old_row = conn.execute("SELECT id FROM speakers WHERE name = ?", (old,)).fetchone()
     new_row = conn.execute("SELECT id FROM speakers WHERE name = ?", (new,)).fetchone()
-    in_transcripts = {p: load_transcript(p) for p in OUTPUT_DIR.glob("*_transcript.json")}
+    in_transcripts = {p: load_transcript(p) for _, p in all_transcripts()}
     target_in_use = new_row or any(s.get("speaker") == new for d in in_transcripts.values() for s in d.get("segments", []))
     if target_in_use and not merge:
         raise NameTaken(f"'{new}' is already someone else. Merge '{old}' into '{new}'?")
@@ -1390,6 +1521,270 @@ def rename_speaker(old: str, new: str, merge: bool = False):
         log(str(e))
         sys.exit(1)
     log(f"{'Merged' if merge else 'Renamed'} '{old}' -> '{new}' (updated {updated} transcript(s)).")
+
+
+# --- DAY SUMMARIES (local Ollama) ---
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434").rstrip("/")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3.5:35b-a3b")
+SUMMARY_CHUNK_CHARS = 20000        # transcript text per model call; long days are read in parts
+SUMMARY_CTX = 16384                # model context window (tokens) to ask Ollama for
+
+SUMMARY_CONTEXT = """You are summarising one day of audio from a personal voice recorder that its owner wears all day.
+It picks up the owner, their roommates and anyone else nearby. Typical content:
+- things someone says out loud that the household is out of or needs to buy,
+- project ideas, usually with specifics (materials, sizes, steps, tools, costs),
+- general chat with roommates, phone calls and meetings.
+Transcript lines look like: [L12] 9:43 AM Speaker 2: text
+The [L12] tag identifies the line. Speaker names are as written (some are placeholders like "Speaker 2").
+The transcript comes from automatic speech recognition, so expect some mistakes; don't invent facts to fill gaps.
+Only use what is in the transcript. Write in English."""
+
+SUMMARY_FORMAT = """Write the summary in Markdown using exactly these sections, in this order. Leave out any section
+that would be empty. Put the [L..] tag of the line(s) it came from at the end of every bullet.
+
+## Overview
+Two to four sentences on what the day was about.
+
+## Conversations
+- **Short title**: who was involved; one-line gist [L12]
+  - a key point [L15]
+
+## Shopping list
+- [ ] item (who mentioned it, and why if said) [L40]
+
+## Project ideas
+### Idea name
+- a specific detail that was mentioned [L50]
+(Project ideas are things the owner or their roommates want to make, build, start or try. Work being
+explained or discussed, like how a system at work functions, belongs under Conversations, not here.)
+
+## To-dos
+- [ ] task (who) [L60]
+
+## Decisions & key facts
+- fact, number, name or date worth remembering [L70]
+
+Rules: no preamble or closing remarks; refer to people by the names in the transcript; skip filler and small talk
+that has no content; never cite a [L..] tag that isn't in the transcript."""
+
+
+def clock_label(sources: list[dict], t: float) -> str:
+    """Wall-clock time (e.g. '9:43 AM') of a moment in the merged day audio."""
+    src = next((s for s in reversed(sources) if isinstance(s, dict) and s.get("start", 0) <= t + 0.01), None)
+    if not src or not src.get("recorded_at"):
+        return f"{int(t // 60)}:{int(t % 60):02d}"
+    h, m, s = (int(x) for x in src["recorded_at"].split(":"))
+    secs = h * 3600 + m * 60 + s + int(t - src["start"])
+    h, m = (secs // 3600) % 24, (secs // 60) % 60
+    return f"{(h % 12) or 12}:{m:02d} {'AM' if h < 12 else 'PM'}"
+
+
+def summary_path(date: str) -> Path:
+    return day_dir(date) / "summary.json"
+
+
+def transcript_fingerprint(data: dict) -> str:
+    """Changes whenever the words or speakers that a summary is based on change."""
+    import hashlib
+    body = [(s.get("speaker"), s.get("text")) for s in data.get("segments", []) if not s.get("noise")]
+    return hashlib.sha1(json.dumps(body, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+def ollama_chat(prompt: str, system: str, max_tokens: int = 1500, on_token=None) -> str:
+    """One answer from the local model, streamed so progress can be shown. Output is capped and
+    repetition discouraged: an uncapped run once got stuck repeating itself for 10+ minutes."""
+    import urllib.request
+    import urllib.error
+    body = json.dumps({
+        "model": OLLAMA_MODEL, "stream": True, "think": False, "keep_alive": "2m",
+        "options": {"num_ctx": SUMMARY_CTX, "temperature": 0.3, "num_predict": max_tokens, "repeat_penalty": 1.1},
+        "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
+    }).encode("utf-8")
+    req = urllib.request.Request(f"{OLLAMA_URL}/api/chat", data=body, headers={"Content-Type": "application/json"})
+    parts, n = [], 0
+    try:
+        with urllib.request.urlopen(req, timeout=600) as r:
+            for raw in r:
+                if not raw.strip():
+                    continue
+                msg = json.loads(raw.decode("utf-8"))
+                if msg.get("error"):
+                    raise RuntimeError(f"Ollama said: {msg['error']}")
+                piece = msg.get("message", {}).get("content", "")
+                if piece:
+                    parts.append(piece)
+                    n += 1
+                    if on_token and n % 20 == 0:
+                        on_token(n)
+                if msg.get("done"):
+                    break
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "ignore")
+        raise RuntimeError(f"Ollama said: {detail or e}") from e
+    except (urllib.error.URLError, TimeoutError) as e:
+        raise RuntimeError(f"Couldn't reach Ollama at {OLLAMA_URL} ({e}). Is it running?") from e
+    text = re.sub(r"(?s)<think>.*?</think>", "", "".join(parts)).strip()   # in case the model thinks anyway
+    return dedupe_lines(text)
+
+
+def drop_empty_sections(md: str) -> str:
+    """Models sometimes write '## Shopping list' then '*No items mentioned.*' despite being told to
+    leave empty sections out; remove sections with no real content."""
+    out, block = [], []
+
+    def flush():
+        if not block:
+            return
+        body = [l for l in block[1:] if l.strip()]
+        empty = block[0].startswith("## ") and (not body or all(
+            re.match(r"^\s*[-*_(]*\s*(no|none|nothing|n/a)\b", l.strip(), re.I) for l in body))
+        if not empty:
+            out.extend(block)
+
+    for line in md.split("\n"):
+        if line.startswith("## "):
+            flush()
+            block = [line]
+        else:
+            block.append(line) if block else out.append(line)
+    flush()
+    return "\n".join(out).strip()
+
+
+def dedupe_lines(text: str) -> str:
+    """Drop repeated bullet lines (what a model stuck in a loop produces)."""
+    seen, out = set(), []
+    for line in text.split("\n"):
+        key = re.sub(r"\s+", " ", line.strip().lower())
+        if key.startswith(("-", "*")) and len(key) > 6:
+            if key in seen:
+                continue
+            seen.add(key)
+        out.append(line)
+    return "\n".join(out)
+
+
+def ollama_problems() -> list[str]:
+    import urllib.request
+    try:
+        with urllib.request.urlopen(f"{OLLAMA_URL}/api/tags", timeout=5) as r:
+            names = {m["name"] for m in json.loads(r.read().decode("utf-8")).get("models", [])}
+    except Exception as e:
+        return [f"Ollama isn't reachable at {OLLAMA_URL} ({e}). Start Ollama and try again."]
+    if OLLAMA_MODEL not in names and f"{OLLAMA_MODEL}:latest" not in names:
+        return [f"The model {OLLAMA_MODEL} isn't installed in Ollama. Run: ollama pull {OLLAMA_MODEL}"]
+    return []
+
+
+def summarize_day(date: str, progress=None) -> dict:
+    """Summarise a day's transcript with the local model. Long days are read in parts (notes per part),
+    then the notes are turned into the final summary."""
+    path = transcript_path(date)
+    data = load_transcript(path)
+    sources = data.get("sources", [])
+    lines, refs = [], {}
+    for i, s in enumerate(data.get("segments", [])):
+        if s.get("noise") or not s.get("text", "").strip():
+            continue
+        ref = f"L{i + 1}"
+        refs[ref] = s["start"]
+        lines.append(f"[{ref}] {clock_label(sources, s['start'])} {s.get('speaker', 'Unknown').replace('_', ' ')}: {s['text']}")
+    if not lines:
+        raise RuntimeError("There's no speech in this day's transcript to summarise.")
+
+    parts, cur = [], []
+    for line in lines:
+        if cur and sum(len(l) + 1 for l in cur) + len(line) > SUMMARY_CHUNK_CHARS:
+            parts.append(cur)
+            cur = []
+        cur.append(line)
+    parts.append(cur)
+
+    day = toDate_label(date)
+    if len(parts) == 1:
+        if progress:
+            progress(0.1, "Writing the summary")
+        md = ollama_chat(f"Transcript for {day}:\n\n" + "\n".join(parts[0]) + "\n\n" + SUMMARY_FORMAT, SUMMARY_CONTEXT,
+                         on_token=lambda k: progress and progress(min(0.95, 0.1 + k / 1500), f"Writing the summary ({k} words so far)"))
+    else:
+        notes = []
+        for n, part in enumerate(parts, 1):
+            if progress:
+                progress((n - 1) / (len(parts) + 1), f"Reading part {n} of {len(parts)}")
+            notes.append(ollama_chat(
+                f"Part {n} of {len(parts)} of the transcript for {day}:\n\n" + "\n".join(part) +
+                "\n\nWrite compact bullet-point notes on this part only: each conversation (topic, who), anything someone "
+                "said they're out of or need to buy, project ideas with every specific mentioned, to-dos, decisions and "
+                "key facts. End every bullet with the [L..] tag(s) it came from, copied exactly. No preamble.",
+                SUMMARY_CONTEXT, max_tokens=900,
+                on_token=lambda k, n=n: progress and progress((n - 1 + min(0.95, k / 900)) / (len(parts) + 1),
+                                                              f"Reading part {n} of {len(parts)} ({k} words of notes)")))
+        if progress:
+            progress(len(parts) / (len(parts) + 1), "Writing the summary")
+        md = ollama_chat(
+            f"Notes on the transcript for {day}, part by part in time order:\n\n" +
+            "\n\n".join(f"### Part {n}\n{t}" for n, t in enumerate(notes, 1)) +
+            "\n\nCombine these notes into one summary of the whole day (merge duplicates; keep the [L..] tags).\n\n" + SUMMARY_FORMAT,
+            SUMMARY_CONTEXT, max_tokens=2000,
+            on_token=lambda k: progress and progress((len(parts) + min(0.95, k / 2000)) / (len(parts) + 1),
+                                                     f"Writing the summary ({k} words so far)"))
+    md = drop_empty_sections(md)
+    # Tags can be single lines, lists or ranges: [L12], [L12, L15], [L30-L45]
+    used = {f"L{n}" for tag in re.findall(r"\[(L\d+(?:\s*[-\u2013,]\s*L?\d+)*)\]", md) for n in re.findall(r"\d+", tag)}
+    result = {"markdown": md, "model": OLLAMA_MODEL, "created": time.time(), "fingerprint": transcript_fingerprint(data),
+              "refs": {r: refs[r] for r in used if r in refs}, "parts": len(parts)}
+    tmp = summary_path(date).with_suffix(".tmp")
+    tmp.write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(summary_path(date))
+    return result
+
+
+def toDate_label(date: str) -> str:
+    from datetime import date as _d
+    try:
+        return _d.fromisoformat(date).strftime("%A, %B %d, %Y")
+    except ValueError:
+        return date
+
+
+class Summarizer:
+    """Runs one summary at a time in the background so the viewer can show progress."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.jobs: dict[str, dict] = {}     # date -> {"status", "progress", "label", "error"}
+
+    def state(self, date: str) -> dict:
+        with self.lock:
+            return dict(self.jobs.get(date, {}))
+
+    def start(self, date: str):
+        with self.lock:
+            if self.jobs.get(date, {}).get("status") in ("queued", "running"):
+                return
+            self.jobs[date] = {"status": "queued", "progress": 0.0, "label": "Waiting"}
+        threading.Thread(target=self._run, args=(date,), daemon=True, name=f"summary-{date}").start()
+
+    _one_at_a_time = threading.Lock()
+
+    def _set(self, date, **kw):
+        with self.lock:
+            self.jobs.setdefault(date, {}).update(kw)
+
+    def _run(self, date: str):
+        with self._one_at_a_time:
+            self._set(date, status="running", label="Starting the model (first time takes about a minute)")
+            try:
+                problems = ollama_problems()
+                if problems:
+                    raise RuntimeError(" ".join(problems))
+                log(f"[summary] {date}: summarising with {OLLAMA_MODEL}")
+                summarize_day(date, progress=lambda p, label: self._set(date, progress=p, label=label))
+                self._set(date, status="done")
+                log(f"[summary] {date}: done")
+            except Exception as e:
+                log(f"[summary] {date} FAILED: {e}")
+                self._set(date, status="failed", error=str(e))
 
 
 # --- BACKGROUND PROCESSING (for the viewer) ---
@@ -1698,8 +2093,7 @@ def create_app(auto_process: bool = False, force: bool = False):
     @app.get("/api/library")
     def library():
         batches = get_daily_batches(INPUT_DIR)
-        transcripts = {p.name.removesuffix("_transcript.json"): p
-                       for p in OUTPUT_DIR.glob("*_transcript.json")} if OUTPUT_DIR.is_dir() else {}
+        transcripts = dict(all_transcripts())
         days = []
         for date in sorted(set(batches) | set(transcripts), reverse=True):
             if not DATE_RE.match(date):
@@ -1745,11 +2139,14 @@ def create_app(auto_process: bool = False, force: bool = False):
     @app.get("/api/days/{date}")
     def day(date: str):
         check_date(date)
-        path = OUTPUT_DIR / f"{date}_transcript.json"
+        path = transcript_path(date)
         if path.is_file():
             data = dict(load_transcript(path))
             audio = data.get("audio")
-            data["audio_url"] = f"/audio/{audio}" if audio and (OUTPUT_DIR / audio).is_file() else None
+            # ?v= changes whenever the file is rebuilt, so the browser never plays a stale cached copy
+            # (e.g. yesterday's 2-minute version of a day that now has a 35-minute recording too)
+            ap = day_dir(date) / audio if audio else None
+            data["audio_url"] = f"/audio/{date}/{audio}?v={int(ap.stat().st_mtime)}" if ap and ap.is_file() else None
             data["sources"] = transcript_sources(data)
             data["status"] = "ready"
         else:
@@ -1759,17 +2156,21 @@ def create_app(auto_process: bool = False, force: bool = False):
             data = {"date": date, "status": "pending", "segments": [], "audio_url": None,
                     "sources": describe_sources(files)}
         for s in data["sources"]:
-            s["url"] = f"/recordings/{s['name']}" if (INPUT_DIR / s["name"]).is_file() else None
+            rp = INPUT_DIR / s["name"]
+            s["url"] = f"/recordings/{s['name']}?v={int(rp.stat().st_mtime)}" if rp.is_file() else None
         return data
 
-    @app.get("/audio/{name}")
-    def audio(name: str):
-        return FileResponse(safe_file(OUTPUT_DIR, name, {".wav", ".mp3"}))  # supports Range, so seeking works
+    @app.get("/audio/{date}/{name}")
+    def audio(date: str, name: str):
+        check_date(date)
+        return FileResponse(safe_file(day_dir(date), name, {".wav", ".mp3"}),   # supports Range, so seeking works
+                            headers={"Cache-Control": "no-cache"})
 
     @app.get("/recordings/{name}")
     def recording(name: str):
         path = safe_file(INPUT_DIR, name, RECORDING_SUFFIXES)
-        return FileResponse(path, media_type="audio/wav" if path.suffix.lower() == ".wav" else "audio/mpeg")
+        return FileResponse(path, media_type="audio/wav" if path.suffix.lower() == ".wav" else "audio/mpeg",
+                            headers={"Cache-Control": "no-cache"})
 
     @app.post("/api/days/{date}/process")
     def process(date: str, body: ProcessBody | None = None):
@@ -1791,7 +2192,7 @@ def create_app(auto_process: bool = False, force: bool = False):
         check_date(date)
         if body.action not in ("trash", "restore", "keep", "replace"):
             raise HTTPException(400, "Unknown action")
-        if not (OUTPUT_DIR / f"{date}_transcript.json").is_file():
+        if not (transcript_path(date)).is_file():
             raise HTTPException(404, f"No transcript for {date}")
         items = [{"start": float(i["start"]), "text": str(i["text"])} for i in body.items if "start" in i and "text" in i]
         new = None
@@ -1819,8 +2220,38 @@ def create_app(auto_process: bool = False, force: bool = False):
         finally:
             conn.close()
         names |= {p["name"] for p in people_summary()}
-        names.discard("Unknown")
+        names = {n for n in names if not n.startswith("Unknown")}
         return {"speakers": sorted(names, key=str.lower)}
+
+    summarizer = Summarizer()
+
+    def summary_state(date: str) -> dict:
+        job = summarizer.state(date)
+        out = {"status": job.get("status") if job.get("status") in ("queued", "running", "failed") else "none",
+               "progress": job.get("progress"), "label": job.get("label"), "error": job.get("error"), "model": OLLAMA_MODEL}
+        sp = summary_path(date)
+        if sp.is_file():
+            saved = json.loads(sp.read_text(encoding="utf-8"))
+            tp = transcript_path(date)
+            out.update({"markdown": drop_empty_sections(saved["markdown"]), "refs": saved.get("refs", {}), "created": saved.get("created"),
+                        "model": saved.get("model"),
+                        "outdated": tp.is_file() and saved.get("fingerprint") != transcript_fingerprint(load_transcript(tp))})
+            if out["status"] == "none":
+                out["status"] = "ready"
+        return out
+
+    @app.get("/api/days/{date}/summary")
+    def get_summary(date: str):
+        check_date(date)
+        return summary_state(date)
+
+    @app.post("/api/days/{date}/summary")
+    def make_summary(date: str):
+        check_date(date)
+        if not (transcript_path(date)).is_file():
+            raise HTTPException(404, "Transcribe this day first")
+        summarizer.start(date)
+        return summary_state(date)
 
     @app.get("/api/people")
     def people():
@@ -1834,7 +2265,7 @@ def create_app(auto_process: bool = False, force: bool = False):
     @app.post("/api/days/{date}/relabel")
     def relabel(date: str, body: RelabelBody):
         check_date(date)
-        if not (OUTPUT_DIR / f"{date}_transcript.json").is_file():
+        if not (transcript_path(date)).is_file():
             raise HTTPException(404, f"No transcript for {date}")
         new = body.new.strip()
         if not new:

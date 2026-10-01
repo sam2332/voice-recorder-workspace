@@ -112,7 +112,9 @@ These settings are at the top of `IngressScript/app.py`:
 |---|---|---|
 | `RUSTLE_STRENGTH` (env) | 1.0 | Clothing-rustle suppression; 0 = off |
 | `SAME_PERSON_THRESHOLD` | 0.75 | Clusters at least this similar are joined back into one person |
-| `MATCH_THRESHOLD` | 0.55 | How similar a voice must be to a known person to reuse their name |
+| `MATCH_THRESHOLD` | 0.68 | How similar a voice must be to a known person to be named automatically |
+| `SUGGEST_THRESHOLD` | 0.45 | Weaker matches are offered as "Maybe …? 46%" suggestions instead |
+| `MIN_VOICE_SECONDS` | 20 | Voices with less speech than this become "Unknown voice N" rather than a new person |
 | `VAD_ONSET` / `VAD_OFFSET` | 0.35 / 0.25 | Lower values pick up quieter or more distant speech |
 
 Set `LANGUAGE=en` in `.env` to skip language detection.
