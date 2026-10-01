@@ -214,6 +214,31 @@
   .prec { border: 1px solid var(--border); background: var(--surface-2); border-radius: 8px; padding: 4px 10px; font-size: 13px; }
   .prec:hover { border-color: var(--accent); }
   .prec span { color: var(--muted); }
+  .ov-filters { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 14px 0 6px; }
+  .ov-filters input[type=search], .ov-filters select { padding: 7px 10px; border: 1px solid var(--border); background: var(--surface); border-radius: 10px; }
+  .ov-filters input[type=search] { flex: 1 1 220px; min-width: 0; }
+  .ov-check { font-size: 13px; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
+  .ov-count { font-size: 12px; color: var(--muted); margin: 4px 2px 8px; min-height: 1em; }
+  .ov-tablewrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 16px; margin-bottom: 16px; }
+  .ov-empty { padding: 12px 16px; margin: 0; }
+  .ov-table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  .ov-table th { text-align: left; font-size: 12px; font-weight: 600; color: var(--muted); padding: 10px 12px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  .ov-table td { padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  .ov-table tr:last-child td { border-bottom: 0; }
+  .ov-table .ov-text { min-width: 240px; }
+  .ov-table .ov-tick { width: 28px; padding-right: 0; }
+  .ov-table tr.ov-done .ov-text { text-decoration: line-through; color: var(--muted); }
+  .ov-table .pday-date { white-space: nowrap; }
+  .ov-kind { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: var(--surface-2); white-space: nowrap; }
+  .ov-kind.k-task, .ov-kind.k-plan { background: var(--accent-soft); color: var(--accent); }
+  .ov-kind.k-shopping { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); }
+  .ov-person { border: 1px solid var(--border); background: var(--surface-2); border-radius: 999px; padding: 1px 8px; font-size: 12px; margin: 0 4px 4px 0; }
+  .ov-person:hover { border-color: var(--accent); }
+  .person-notes { margin: 14px 0 0; padding-top: 12px; border-top: 1px solid var(--border); display: grid; gap: 6px; }
+  .person-notes h4 { margin: 0; font-size: 13px; color: var(--muted); font-weight: 600; }
+  .pnote { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; font-size: 14px; }
+  .pnote .ov-kind { flex: none; }
+  .pnote .prec { padding: 0 8px; flex: none; }
   .heat-foot { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 8px; font-size: 12px; color: var(--muted); }
   .legend { display: inline-flex; align-items: center; gap: 3px; }
   .legend .sq.l0 { background: var(--surface-2); } .legend .sq.l1 { background: color-mix(in srgb, var(--accent) 30%, var(--surface-2)); }
@@ -544,7 +569,7 @@
 <div class="app hidden" id="app">
   <header>
     <button class="icon-btn" id="library-toggle" aria-label="Show library" title="Library">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
     </button>
     <div class="brand" id="brand" role="button" tabindex="0" title="Home" style="cursor:pointer">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v5M8 22h8"/></svg>
@@ -598,6 +623,10 @@
       <button class="lib-home server-only" id="lib-people">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7M18 14a6.5 6.5 0 0 1 3.5 6"/></svg>
         People
+      </button>
+      <button class="lib-home server-only" id="lib-overview">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+        Overview
       </button>
       <div class="lib-actions server-only hidden" id="lib-actions">
         <button class="btn small" id="process-all"></button>
@@ -955,6 +984,7 @@
   function updateNav() {
     $('lib-home').classList.toggle('active', state.view === 'home');
     $('lib-people').classList.toggle('active', state.view === 'people');
+    $('lib-overview').classList.toggle('active', state.view === 'overview');
     const i = state.library.findIndex(d => d.date === state.date);
     // Library is newest first, so "previous" (older) is further down the list
     $('prev-day').disabled = i < 0 || i >= state.library.length - 1;
@@ -969,6 +999,7 @@
     if (!date) { if (location.hash) history.pushState(null, '', location.pathname); showHome(); return; }
     if (seekTo !== undefined) state.pendingSeek = seekTo;   // jump to this moment once the day is open
     if (date === 'people') { if (location.hash !== '#people') location.hash = 'people'; else showPeople(); return; }
+    if (date === 'overview') { if (location.hash !== '#overview') location.hash = 'overview'; else showOverview(); return; }
     if (location.hash.slice(1) !== date) location.hash = date;  // hashchange opens it
     else openDay(date);
   }
@@ -1234,6 +1265,188 @@
     if (state.view === 'people') renderPeople(focus);
   }
 
+  // ---------- Overview: everything pulled out of the recent days, as one searchable table ----------
+  const KINDS = { fact: 'Memory', interaction: 'Interaction', task: 'To-do', shopping: 'Shopping', idea: 'Idea', decision: 'Decision', plan: 'Plan' };
+  const ov = { q: '', kind: '', person: '', hideDone: false, built: false, timer: null };
+
+  async function showOverview() {
+    if (state.view === 'day') savePosition();
+    state.view = 'overview';
+    state.date = null;
+    state.openToken++;
+    audio.pause();
+    $('app').classList.add('is-home');
+    $('title').textContent = 'Overview';
+    document.title = 'Overview · Recorder Playback';
+    closeDrawers(); renderLibrary(); updateNav();
+    $('home').scrollTop = 0;
+    ov.built = false;
+    $('home-inner').replaceChildren(el('div', 'note', 'Gathering the last 30 days…'));
+    await loadOverview();
+    // Days with no (or outdated) extraction are filled in by the server, one at a time, in the background
+    try { await api('/api/overview/extract', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }); } catch {}
+    loadOverview();
+  }
+
+  async function loadOverview() {
+    clearTimeout(ov.timer);
+    try { state.overview = await api('/api/overview'); }
+    catch (e) {
+      if (state.view === 'overview') $('home-inner').replaceChildren(el('div', 'error-box', `Couldn’t load the overview: ${e.message}`));
+      return;
+    }
+    if (state.view !== 'overview') return;
+    renderOverview();
+    const x = state.overview.extractor;
+    if (x.current || x.queued.length) ov.timer = setTimeout(() => { if (state.view === 'overview') loadOverview(); }, 4000);
+  }
+
+  const taskKey = r => `${r.date}|${r.text}`;
+
+  function overviewRows() {
+    const rows = [];
+    for (const d of state.overview.days) for (const it of d.items) rows.push({ ...it, date: d.date });
+    rows.sort((a, b) => a.date < b.date ? 1 : a.date > b.date ? -1 : (a.start ?? 1e9) - (b.start ?? 1e9));
+    return rows;
+  }
+
+  function renderOverview() {
+    const days = state.overview.days;
+    const inner = $('home-inner');
+    if (!ov.built) {
+      // The filter bar is built once so typing in it isn't interrupted by the refreshes while days are being read
+      ov.built = true;
+      const head = el('div');
+      head.append(el('h2', 'hello', 'Overview'),
+        el('p', 'lead', 'Memories, interactions, to-dos and plans pulled out of your last 30 days, and who you saw each day. Search or filter the table; click a time to hear it.'));
+      ov.status = el('div');
+      ov.filters = el('div', 'ov-filters');
+      const q = el('input'); q.type = 'search'; q.placeholder = 'Search everything…'; q.setAttribute('aria-label', 'Search the overview');
+      q.oninput = () => { ov.q = q.value; renderOverviewTable(); };
+      ov.kindSel = el('select'); ov.kindSel.setAttribute('aria-label', 'Type');
+      [['', 'All types'], ...Object.entries(KINDS)].forEach(([v, l]) => { const o = el('option', null, l); o.value = v; ov.kindSel.append(o); });
+      ov.kindSel.onchange = () => { ov.kind = ov.kindSel.value; renderOverviewTable(); };
+      ov.personSel = el('select'); ov.personSel.setAttribute('aria-label', 'Person');
+      ov.personSel.onchange = () => { ov.person = ov.personSel.value; renderOverviewTable(); };
+      const done = el('label', 'ov-check'); const cb = el('input'); cb.type = 'checkbox';
+      cb.onchange = () => { ov.hideDone = cb.checked; renderOverviewTable(); };
+      done.append(cb, ' Hide finished to-dos');
+      ov.filters.append(q, ov.kindSel, ov.personSel, done);
+      ov.count = el('div', 'ov-count');
+      ov.tableWrap = el('div', 'ov-tablewrap');
+      ov.saw = el('div');
+      inner.replaceChildren(head, ov.status, ov.filters, ov.count, ov.tableWrap, ov.saw);
+    }
+
+    // Status: what the background extraction is doing
+    const x = state.overview.extractor;
+    const errs = Object.entries(x.errors);
+    ov.status.replaceChildren();
+    if (x.current || x.queued.length) {
+      const cur = x.current;
+      const box = card('spin', 'Reading your days…');
+      box.append(el('p', null, `${cur ? `${shortDate(cur.date)}: ${cur.label}` : 'Waiting'}${x.queued.length ? ` · ${plural(x.queued.length, 'more day')} waiting` : ''}`));
+      const bar = el('div', 'bar-mini'); const fill = el('i'); fill.style.width = `${Math.round((cur?.progress || 0) * 100)}%`; bar.append(fill);
+      box.append(bar);
+      ov.status.append(box);
+    }
+    if (errs.length) {
+      const box = card('alert', `Couldn’t read ${plural(errs.length, 'day')}`);
+      box.classList.add('attention');
+      box.append(el('p', null, errs[0][1]));
+      const act = el('div', 'actions'); const b = el('button', 'btn small', 'Try again');
+      b.onclick = async () => {
+        try { await api('/api/overview/extract', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ retry: true }) }); } catch (e) { toast(e.message); }
+        loadOverview();
+      };
+      act.append(b); box.append(act); ov.status.append(box);
+    }
+
+    // The person filter keeps its choice while the list of people is refreshed
+    const names = [...new Set(overviewRows().flatMap(r => r.people))].sort((a, b) => displayName(a).localeCompare(displayName(b)));
+    ov.personSel.replaceChildren();
+    [['', 'Everyone'], ...names.map(n => [n, displayName(n)])].forEach(([v, l]) => { const o = el('option', null, l); o.value = v; ov.personSel.append(o); });
+    ov.personSel.value = names.includes(ov.person) ? ov.person : (ov.person = '');
+    renderOverviewTable();
+
+    // Who I saw each day
+    const saw = el('div', 'card');
+    saw.append(el('h3', null, 'Who I saw each day'));
+    const list = el('div', 'person-days');
+    for (const d of days) {
+      const row = el('div', 'pday');
+      const dl = el('button', 'pday-date', shortDate(d.date)); dl.title = `Open ${longDate(d.date)}`; dl.onclick = () => go(d.date);
+      const recs = el('div', 'precs');
+      if (!d.speakers.length) recs.append(el('span', 'muted', 'No one identified'));
+      for (const p of d.speakers) {
+        const b = el('button', 'prec');
+        b.append(el('b', null, displayName(p.name)), el('span', null, ` ${fmtDur(p.seconds)}`));
+        b.title = `Open ${shortDate(d.date)} where ${displayName(p.name)} first speaks`;
+        b.onclick = () => go(d.date, p.first_line);
+        recs.append(b);
+      }
+      row.append(dl, recs); list.append(row);
+    }
+    if (!days.length) list.append(el('p', 'muted', 'No transcribed days in this window yet.'));
+    saw.append(list);
+    ov.saw.replaceChildren(saw);
+  }
+
+  function renderOverviewTable() {
+    const done = store.get('ovDone', {});
+    const words = ov.q.toLowerCase().split(/\s+/).filter(Boolean);
+    const all = overviewRows();
+    const rows = all.filter(r => {
+      if (ov.kind && r.kind !== ov.kind) return false;
+      if (ov.person && !r.people.includes(ov.person)) return false;
+      if (ov.hideDone && r.kind === 'task' && done[taskKey(r)]) return false;
+      const hay = [r.text, KINDS[r.kind], r.date, shortDate(r.date), ...r.people.map(displayName)].join(' ').toLowerCase();
+      return words.every(w => hay.includes(w));
+    });
+    ov.count.textContent = all.length ? (rows.length === all.length ? plural(all.length, 'item') : `${rows.length} of ${plural(all.length, 'item')}`) : '';
+    if (!rows.length) {
+      ov.tableWrap.replaceChildren(el('p', 'muted ov-empty', all.length ? 'Nothing matches that.' : 'Nothing extracted yet. It appears here as each day is read.'));
+      return;
+    }
+    const table = el('table', 'ov-table');
+    const hr = el('tr');
+    ['', 'Day', 'Type', 'What', 'People', 'At'].forEach(h => hr.append(el('th', null, h)));
+    const thead = el('thead'); thead.append(hr); table.append(thead);
+    const body = el('tbody');
+    for (const r of rows.slice(0, 600)) {
+      const tr = el('tr');
+      const c0 = el('td', 'ov-tick');
+      if (r.kind === 'task') {
+        const cb = el('input'); cb.type = 'checkbox'; cb.checked = !!done[taskKey(r)]; cb.setAttribute('aria-label', 'Done');
+        cb.onchange = () => {
+          const d = store.get('ovDone', {});
+          if (cb.checked) d[taskKey(r)] = 1; else delete d[taskKey(r)];
+          store.set('ovDone', d);
+          tr.classList.toggle('ov-done', cb.checked);
+          if (ov.hideDone) renderOverviewTable();
+        };
+        c0.append(cb);
+        tr.classList.toggle('ov-done', cb.checked);
+      }
+      const day = el('td'); const db = el('button', 'pday-date', shortDate(r.date)); db.onclick = () => go(r.date); day.append(db);
+      const kind = el('td'); kind.append(el('span', `ov-kind k-${r.kind}`, KINDS[r.kind]));
+      const text = el('td', 'ov-text', r.text);
+      const who = el('td');
+      r.people.forEach(n => {
+        const b = el('button', 'ov-person', displayName(n));
+        b.onclick = () => { ov.person = n; ov.personSel.value = n; renderOverviewTable(); };
+        who.append(b);
+      });
+      const at = el('td');
+      if (r.start !== undefined) { const b = el('button', 'prec', r.at); b.title = 'Hear this moment'; b.onclick = () => go(r.date, r.start); at.append(b); }
+      tr.append(c0, day, kind, text, who, at);
+      body.append(tr);
+    }
+    table.append(body);
+    ov.tableWrap.replaceChildren(table);
+    if (rows.length > 600) ov.tableWrap.append(el('p', 'muted ov-empty', 'Showing the newest 600. Search or filter to narrow it.'));
+  }
+
   function renderPeople(focus) {
     const people = state.people || [];
     $('subtitle').textContent = `${plural(people.length, 'person')} across your transcripts`.replace('persons', 'people');
@@ -1294,6 +1507,18 @@
         list.append(row);
       }
       c.append(list);
+      if (p.highlights?.length) {
+        const notes = el('div', 'person-notes');
+        notes.append(el('h4', null, 'Recently'));
+        for (const h of p.highlights) {
+          const row = el('div', 'pnote');
+          row.append(el('span', `ov-kind k-${h.kind}`, KINDS[h.kind] || h.kind), el('span', null, h.text));
+          const b = el('button', 'prec', `${shortDate(h.date)}${h.at ? ' · ' + h.at : ''}`);
+          b.title = 'Hear this moment'; b.onclick = () => go(h.date, h.start);
+          row.append(b); notes.append(row);
+        }
+        c.append(notes);
+      }
       frag.append(c);
     });
     $('home-inner').replaceChildren(frag);
@@ -1437,6 +1662,7 @@
     renderLibrary();
     const want = decodeURIComponent(location.hash.slice(1));
     if (want === 'people' && state.server) showPeople();
+    else if (want === 'overview' && state.server) showOverview();
     else if (want && libItem(want)) openDay(want);
     else if (state.server) { history.replaceState(null, '', location.pathname); showHome(); }
     else openDay(state.library[0].date);   // file mode has no home page
@@ -2572,6 +2798,7 @@
   $('refresh-btn').onclick = () => refreshLibrary(false);
   $('lib-home').onclick = () => go('');
   $('lib-people').onclick = () => { go('people'); closeDrawers(); };
+  $('lib-overview').onclick = () => { go('overview'); closeDrawers(); };
   $('brand').onclick = () => state.server && go('');
   $('brand').onkeydown = e => { if (e.key === 'Enter') $('brand').onclick(); };
   $('process-all').onclick = () => transcribe(state.library.filter(d => d.status === 'pending' && !d.job).map(d => d.date).reverse());
@@ -2837,6 +3064,7 @@
     const d = decodeURIComponent(location.hash.slice(1));
     if (!d) { if (state.server && state.view !== 'home') showHome(); }
     else if (d === 'people') { if (state.view !== 'people') showPeople(); }
+    else if (d === 'overview') { if (state.view !== 'overview') showOverview(); }
     else if (d !== state.date && libItem(d)) openDay(d);
   });
   document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshLibrary(); });

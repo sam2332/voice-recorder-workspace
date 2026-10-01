@@ -1503,7 +1503,16 @@ def people_summary() -> list[dict]:
             d["recordings"] = sorted(d["recordings"].values(), key=lambda r: r["offset"])
             for r in d["recordings"]:
                 r["seconds"] = round(r["seconds"], 1)
-        out.append({"name": p["name"], "seconds": round(p["seconds"], 1), "lines": p["lines"],
+        # Recent things extracted for the Overview that involve this person, newest first
+        highlights = []
+        for d in days:
+            saved = load_extract(d["date"])
+            for it in (saved or {}).get("items", []):
+                if p["name"] in it.get("people", []):
+                    highlights.append({**it, "date": d["date"]})
+            if len(highlights) >= 12:
+                break
+        out.append({"name": p["name"], "seconds": round(p["seconds"], 1), "lines": p["lines"], "highlights": highlights[:12],
                     "days": days, "recordings": sum(len(d["recordings"]) for d in days),
                     "first_seen": days[-1]["date"], "last_seen": days[0]["date"],
                     "voiceprints": prints.get(p["name"], 0)})
@@ -1685,7 +1694,7 @@ def transcript_fingerprint(data: dict) -> str:
     return hashlib.sha1(json.dumps(body, ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
-def ollama_chat(prompt: str, system: str, max_tokens: int = 1500, on_token=None) -> str:
+def ollama_chat(prompt: str, system: str, max_tokens: int = 1500, on_token=None, fmt: dict | None = None) -> str:
     """One answer from the local model, streamed so progress can be shown. Output is capped and
     repetition discouraged: an uncapped run once got stuck repeating itself for 10+ minutes."""
     import urllib.request
@@ -1694,6 +1703,7 @@ def ollama_chat(prompt: str, system: str, max_tokens: int = 1500, on_token=None)
         "model": OLLAMA_MODEL, "stream": True, "think": False, "keep_alive": "2m",
         "options": {"num_ctx": SUMMARY_CTX, "temperature": 0.3, "num_predict": max_tokens, "repeat_penalty": 1.1},
         "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
+        **({"format": fmt} if fmt else {}),   # a JSON schema: the answer is forced to match it
     }).encode("utf-8")
     req = urllib.request.Request(f"{OLLAMA_URL}/api/chat", data=body, headers={"Content-Type": "application/json"})
     parts, n = [], 0
@@ -1719,7 +1729,7 @@ def ollama_chat(prompt: str, system: str, max_tokens: int = 1500, on_token=None)
     except (urllib.error.URLError, TimeoutError) as e:
         raise RuntimeError(f"Couldn't reach Ollama at {OLLAMA_URL} ({e}). Is it running?") from e
     text = re.sub(r"(?s)<think>.*?</think>", "", "".join(parts)).strip()   # in case the model thinks anyway
-    return dedupe_lines(text)
+    return text if fmt else dedupe_lines(text)
 
 
 def drop_empty_sections(md: str) -> str:
@@ -1840,6 +1850,226 @@ def toDate_label(date: str) -> str:
         return _d.fromisoformat(date).strftime("%A, %B %d, %Y")
     except ValueError:
         return date
+
+
+# --- OVERVIEW: facts pulled out of each day as structured data (local Ollama, JSON-schema output) ---
+EXTRACT_DAYS = 30                  # how far back the Overview page looks, counted from the newest transcript
+EXTRACT_KINDS = ["fact", "interaction", "task", "shopping", "idea", "decision", "plan"]
+EXTRACT_SCHEMA = {
+    "type": "object",
+    "properties": {"items": {"type": "array", "items": {
+        "type": "object",
+        "properties": {
+            "kind": {"type": "string", "enum": EXTRACT_KINDS},
+            "text": {"type": "string"},
+            "people": {"type": "array", "items": {"type": "string"}},
+            "line": {"type": "integer"},
+        },
+        "required": ["kind", "text", "people", "line"],
+    }}},
+    "required": ["items"],
+}
+EXTRACT_FORMAT = """Pull out everything from this transcript worth remembering later, as JSON: {"items": [...]}.
+Each item has:
+- "kind": one of
+  fact        a thing worth remembering about a person or the world (their job, plans, preferences, numbers, names, dates)
+  interaction a conversation or call: who it was with and what it was about
+  task        something someone said they will do or need to do
+  shopping    something the household is out of or needs to buy
+  idea        a project or thing the owner or a roommate wants to make, build or try
+  decision    something that was decided or agreed
+  plan        an upcoming event, appointment or visit
+- "text": one short self-contained sentence, so it makes sense in a table without the transcript
+- "people": names of the people it involves, exactly as written in the transcript (empty list if nobody in particular)
+- "line": the number from the [L..] tag of the line it came from (digits only, e.g. 12)
+Skip small talk and filler. Never invent anything that isn't in the transcript. Return {"items": []} if nothing qualifies."""
+
+
+def extract_path(date: str) -> Path:
+    return day_dir(date) / "extract.json"
+
+
+def load_extract(date: str) -> dict | None:
+    """The saved extraction for a day, or None (missing or unreadable)."""
+    try:
+        return json.loads(extract_path(date).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def clean_extract_items(raw, refs: dict[int, float], names: dict[str, str], sources: list[dict]) -> list[dict]:
+    """Keep only well-formed items: a known kind, some text, a line that exists, people who were in the day."""
+    out, seen = [], set()
+    for it in raw if isinstance(raw, list) else []:
+        if not isinstance(it, dict):
+            continue
+        kind = it.get("kind")
+        text = re.sub(r"\s+", " ", str(it.get("text") or "")).strip()
+        try:
+            line = int(re.sub(r"\D", "", str(it.get("line"))) or -1)
+        except ValueError:
+            line = -1
+        key = (kind, text.lower())
+        if kind not in EXTRACT_KINDS or len(text) < 4 or key in seen:
+            continue
+        seen.add(key)
+        people = []
+        for n in it.get("people") if isinstance(it.get("people"), list) else []:
+            real = names.get(re.sub(r"[\s_]+", " ", str(n)).strip().lower())
+            if real and real not in people:
+                people.append(real)
+        item = {"kind": kind, "text": text, "people": people}
+        if line in refs:
+            item.update(line=line, start=refs[line], at=clock_label(sources, refs[line]))
+        out.append(item)
+    return out
+
+
+def extract_day(date: str, progress=None) -> dict:
+    """Ask the local model for a day's facts as JSON (constrained by EXTRACT_SCHEMA) and save them."""
+    data = load_transcript(transcript_path(date))
+    sources = data.get("sources", [])
+    lines, refs, names = [], {}, {}
+    for i, s in enumerate(data.get("segments", [])):
+        if s.get("noise") or not s.get("text", "").strip():
+            continue
+        spk = s.get("speaker", "Unknown")
+        names[re.sub(r"[\s_]+", " ", spk).strip().lower()] = spk
+        refs[i + 1] = s["start"]
+        lines.append(f"[L{i + 1}] {clock_label(sources, s['start'])} {spk.replace('_', ' ')}: {s['text']}")
+    if not lines:
+        raise RuntimeError("There's no speech in this day's transcript.")
+    parts, cur = [], []
+    for line in lines:
+        if cur and sum(len(l) + 1 for l in cur) + len(line) > SUMMARY_CHUNK_CHARS:
+            parts.append(cur)
+            cur = []
+        cur.append(line)
+    parts.append(cur)
+
+    raw = []
+    for n, part in enumerate(parts, 1):
+        if progress:
+            progress((n - 1) / len(parts), f"Reading part {n} of {len(parts)}" if len(parts) > 1 else "Reading the day")
+        text = ollama_chat(f"Transcript for {toDate_label(date)}" + (f" (part {n} of {len(parts)})" if len(parts) > 1 else "") +
+                           ":\n\n" + "\n".join(part) + "\n\n" + EXTRACT_FORMAT, SUMMARY_CONTEXT,
+                           max_tokens=2500, fmt=EXTRACT_SCHEMA)
+        try:
+            raw += json.loads(text).get("items", [])
+        except (json.JSONDecodeError, AttributeError):
+            log(f"[overview] {date} part {n}: the model's answer wasn't valid JSON; skipped")
+    items = clean_extract_items(raw, refs, names, sources)
+    result = {"items": items, "model": OLLAMA_MODEL, "created": time.time(), "fingerprint": transcript_fingerprint(data)}
+    tmp = extract_path(date).with_suffix(".tmp")
+    tmp.write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(extract_path(date))
+    return result
+
+
+def extract_status(date: str, data: dict | None = None) -> str:
+    """'ready', 'outdated' (the transcript changed since) or 'missing'."""
+    saved = load_extract(date)
+    if not saved:
+        return "missing"
+    data = data or load_transcript(transcript_path(date))
+    return "ready" if saved.get("fingerprint") == transcript_fingerprint(data) else "outdated"
+
+
+def overview_data(days: int = EXTRACT_DAYS) -> dict:
+    """Everything the Overview page shows, read from disk only (no model call): per day, who was
+    heard and the extracted items. Days are counted back from the newest transcript."""
+    from datetime import date as _d, timedelta
+    found = all_transcripts()
+    out = []
+    if found:
+        cutoff = (_d.fromisoformat(found[-1][0]) - timedelta(days=max(1, days))).isoformat()
+        for date, path in reversed(found):
+            if date < cutoff:
+                break
+            try:
+                data = load_transcript(path)
+            except (OSError, json.JSONDecodeError):
+                continue
+            heard: dict[str, dict] = {}
+            for seg in data.get("segments", []):
+                name = seg.get("speaker")
+                if not name or name.startswith("Unknown") or seg.get("noise"):
+                    continue
+                p = heard.setdefault(name, {"name": name, "seconds": 0.0, "lines": 0, "first_line": seg["start"]})
+                p["seconds"] += max(0.0, seg["end"] - seg["start"]); p["lines"] += 1
+            saved = load_extract(date)
+            out.append({
+                "date": date, "recordings": len(data.get("sources", [])),
+                "speakers": sorted(({**p, "seconds": round(p["seconds"], 1)} for p in heard.values()), key=lambda p: -p["seconds"]),
+                "extract": extract_status(date, data),
+                "items": saved["items"] if saved else [],
+            })
+    return {"days": out}
+
+
+class Extractor:
+    """Fills in the Overview's data one day at a time, newest first, using the local model.
+    Waits while transcription is running so the two don't fight over the GPU."""
+
+    def __init__(self, busy=lambda: False):
+        self.lock = threading.Lock()
+        self.queue: list[str] = []
+        self.current: dict | None = None     # {"date", "progress", "label"}
+        self.errors: dict[str, str] = {}
+        self.thread: threading.Thread | None = None
+        self.busy = busy
+
+    def state(self) -> dict:
+        with self.lock:
+            return {"current": dict(self.current) if self.current else None, "queued": list(self.queue),
+                    "errors": dict(self.errors), "model": OLLAMA_MODEL}
+
+    def enqueue(self, dates: list[str], retry: bool = False):
+        with self.lock:
+            for d in dates:
+                if retry:
+                    self.errors.pop(d, None)
+                if d in self.queue or d in self.errors or (self.current and self.current["date"] == d):
+                    continue
+                self.queue.append(d)
+            if self.queue and not (self.thread and self.thread.is_alive()):
+                self.thread = threading.Thread(target=self._loop, daemon=True, name="overview-extract")
+                self.thread.start()
+
+    def _set(self, **kw):
+        with self.lock:
+            if self.current:
+                self.current.update(kw)
+
+    def _loop(self):
+        while True:
+            with self.lock:
+                if not self.queue:
+                    self.current = None
+                    return
+                date = self.queue.pop(0)
+                self.current = {"date": date, "progress": 0.0, "label": "Waiting for transcription to finish"}
+            while self.busy():
+                time.sleep(10)
+            try:
+                with Summarizer._one_at_a_time:
+                    self._set(label="Starting the model (first time takes about a minute)")
+                    problems = ollama_problems()
+                    if problems:
+                        raise ConnectionError(" ".join(problems))
+                    log(f"[overview] {date}: extracting with {OLLAMA_MODEL}")
+                    extract_day(date, progress=lambda p, label: self._set(progress=p, label=label))
+                log(f"[overview] {date}: done")
+            except ConnectionError as e:
+                # Ollama itself is the problem: stop here rather than failing every queued day
+                with self.lock:
+                    for d in [date] + self.queue:
+                        self.errors[d] = str(e)
+                    self.queue.clear()
+            except Exception as e:
+                log(f"[overview] {date} FAILED: {e}")
+                with self.lock:
+                    self.errors[date] = str(e)
 
 
 class Summarizer:
@@ -2352,6 +2582,22 @@ def create_app(auto_process: bool = False, force: bool = False):
     @app.get("/api/people")
     def people():
         return {"people": people_summary()}
+
+    extractor = Extractor(busy=lambda: bool(processor.current or processor.queue))
+
+    @app.get("/api/overview")
+    def get_overview(days: int = EXTRACT_DAYS):
+        return {**overview_data(max(1, min(days, 400))), "extractor": extractor.state()}
+
+    class ExtractBody(BaseModel):
+        retry: bool = False
+
+    @app.post("/api/overview/extract")
+    def run_extract(body: ExtractBody | None = None):
+        """Queue every day in the Overview window that has no (or an outdated) extraction, newest first."""
+        todo = [d["date"] for d in overview_data()["days"] if d["extract"] != "ready"]
+        extractor.enqueue(todo, retry=bool(body and body.retry))
+        return {"queued": todo, "extractor": extractor.state()}
 
     class RelabelBody(BaseModel):
         old: str
