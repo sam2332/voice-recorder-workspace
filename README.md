@@ -5,24 +5,12 @@ Turns a day's worth of voice-recorder recordings into a speaker-labelled transcr
 - Merges each day's recordings (MP3 or WAV, mixed is fine) into one cleaned-up audio file.
 - Transcribes with WhisperX (`large-v3`) and works out who spoke when, splitting lines wherever the speaker changes.
 - Remembers voices across days, so `Speaker_2` today is the same person as `Speaker_2` last week. Rename them to real names once, and every past and future transcript uses the name.
-- A browser viewer comes up immediately. New or incomplete days are transcribed in the background, with live progress on the page.
+- A browser app that opens on a home page:
+  - **Sync** copies new recordings off the plugged-in recorder;
+  - an activity grid shows which days you recorded;
+  - transcription runs with live progress (automatically too, if you turn that on).
 
-## Run with Docker (recommended)
-
-You need Docker Desktop with an NVIDIA GPU (WSL2 backend on Windows).
-
-```powershell
-copy .env.example .env      # paste your Hugging Face token into .env
-docker compose up -d --build
-```
-
-Open <http://localhost:5000>. The first build downloads about 8 GB, and the first transcription downloads the models (a few GB, cached afterwards). Follow along with `docker compose logs -f`; stop with `docker compose down`.
-
-- **Recordings:** read from `./RECORD`. To read straight from the recorder, set `RECORD_PATH=E:/RECORD` in `.env`.
-- **Your data:** transcripts and the voice database are stored in `IngressScript/`, the same files a local run uses.
-- **Access:** the page is only reachable from this computer. To allow other devices, change the port line in `docker-compose.yml` to `"5000:5000"`.
-
-## Run locally
+## Setup and run
 
 You need **Python 3.12**, **ffmpeg** on your PATH, and ideally an NVIDIA GPU (it also runs on CPU, much more slowly).
 
@@ -33,6 +21,8 @@ python -m venv .venv
 copy .env.example .env      # then paste your Hugging Face token into .env
 .venv\Scripts\python IngressScript\app.py
 ```
+
+Open <http://localhost:5000> (it opens by itself). The first transcription downloads the models (a few GB, cached afterwards). The page is only reachable from this computer; add `--host 0.0.0.0` to allow other devices on your network.
 
 If you use uv, run `uv pip install -r requirements.txt --index-strategy unsafe-best-match` so it picks the CUDA build of PyTorch.
 
@@ -54,6 +44,22 @@ Other commands:
 Files must be named like the recorder names them: `V2026-08-20-06-18-54.MP3` or `.WAV`. Recordings shorter than 3 seconds are skipped. The recorder's `BIT:7` setting (1536 kbps WAV) works, and so does mixing it with older MP3s on the same day.
 
 ## Using the viewer
+
+**Home** is where the app opens. Get back to it with *Home & sync* at the top of the library, or by clicking the app name.
+
+1. **Set up (first run).** Check that everything shows green, then choose:
+   - whether new recordings are **transcribed automatically** (off by default: nothing is transcribed until you say so);
+   - the language;
+   - the rustle cleanup.
+
+   You can change these later under **Settings** at the bottom of Home.
+2. **Sync.** Plug the recorder in. It's recognised by its `RECORD` folder and `SETTINGS.TXT`, whatever drive letter it gets. If it holds recordings that aren't in your library yet, a **Sync** card appears at the top of Home showing how many there are. Press **Sync** to copy them.
+   - If auto-transcribe is on, the copied days start transcribing straight away; otherwise they wait for you to press Transcribe.
+   - The card only appears when there is something new to copy.
+   - `SYNC_MODE=copy` in `.env` (the default) leaves them on the recorder.
+   - `SYNC_MODE=move` deletes each recording from the recorder once its copy has been checked.
+3. **Recording activity.** A GitHub-style grid of the last year: one square per day, darker for more recordings, outlined in amber when not transcribed yet. Click a square to open that day.
+4. **Transcription.** Shows what's running, with **Transcribe** buttons for days that are waiting.
 
 - **Library (left):** every day found in the recordings folder.
   - Days being transcribed show a live percentage, and a progress pill in the header follows the current job from any page.

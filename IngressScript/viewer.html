@@ -96,6 +96,78 @@
   @media (max-width: 899px) { .job-pill .txt { display: none; } .job-pill { padding: 5px; margin: 0; } }
 
   main { flex: 1; display: grid; grid-template-columns: 280px minmax(0, 1fr) 280px; min-height: 0; }
+  /* Home view: no transcript, player or day details */
+  .app.is-home main { grid-template-columns: 280px minmax(0, 1fr); }
+  .app.is-home :is(.toolbar, .banner, .transcript, .pending-view, .player, .jump, #details, .day-nav, #export-btn, #details-toggle) { display: none !important; }
+  .app:not(.is-home) .home { display: none !important; }
+  .home { flex: 1; overflow-y: auto; padding: 28px 24px 48px; }
+  .home-inner { max-width: 760px; margin: 0 auto; display: grid; gap: 18px; }
+  .home h2.hello { margin: 0; font-size: 24px; }
+  .home .lead { margin: 2px 0 6px; color: var(--muted); }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 20px 22px; box-shadow: var(--shadow); }
+  .card.attention { border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
+  .card h3 { margin: 0 0 4px; font-size: 16px; display: flex; align-items: center; gap: 10px; }
+  .card h3 svg { width: 20px; height: 20px; color: var(--accent); flex: none; }
+  .card p { margin: 0; color: var(--muted); font-size: 14px; }
+  .card .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+  .card .progress { margin-top: 14px; }
+  .sync-card { text-align: center; padding: 26px 22px; }
+  .sync-card h3 { justify-content: center; font-size: 17px; }
+  .sync-card .sync-what { font-size: 15px; color: var(--text); margin-top: 6px; }
+  .sync-card .sync-dev { margin-top: 14px; font-weight: 600; }
+  .sync-card .actions { justify-content: center; }
+  .sync-card .progress { text-align: left; }
+  .btn.big { font-size: 16px; font-weight: 600; padding: 12px 28px; border-radius: 12px; }
+  .rec-dev { display: flex; align-items: center; gap: 14px; margin-top: 14px; padding: 12px 14px; border-radius: 12px; background: var(--surface-2); }
+  .rec-dev .info { flex: 1; min-width: 0; }
+  .rec-dev .name { font-weight: 600; }
+  .rec-dev .meta { font-size: 13px; color: var(--muted); }
+  .checks { list-style: none; padding: 0; margin: 12px 0 0; display: grid; gap: 8px; }
+  .checks li { display: grid; grid-template-columns: 20px 1fr; gap: 10px; font-size: 14px; }
+  .checks .ok { color: var(--ok); } .checks .bad { color: var(--warn); }
+  .checks .d { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+  .form { display: grid; gap: 14px; margin-top: 16px; }
+  .form label.row-l { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 12px; font-size: 14px; }
+  .form .hint { font-size: 12.5px; color: var(--muted); }
+  .form select { padding: 7px 10px; border-radius: 10px; border: 1px solid var(--border); background: var(--bg); min-width: 170px; }
+  .switch { appearance: none; width: 40px; height: 22px; border-radius: 999px; background: var(--border); position: relative; cursor: pointer; transition: background .15s; flex: none; }
+  .switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: left .15s; }
+  .switch:checked { background: var(--accent); } .switch:checked::after { left: 21px; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; margin-top: 14px; }
+  .tile { text-align: left; border: 1px solid var(--border); background: var(--surface-2); border-radius: 12px; padding: 12px 14px; }
+  .tile:hover { border-color: var(--accent); }
+  .tile .t1 { font-weight: 600; display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+  .tile .t2 { font-size: 12.5px; color: var(--muted); margin-top: 2px; }
+  details.card summary { cursor: pointer; font-weight: 600; list-style: none; display: flex; align-items: center; gap: 10px; }
+  details.card summary::-webkit-details-marker { display: none; }
+  details.card summary svg { width: 20px; height: 20px; color: var(--accent); }
+  .lib-home { display: flex; align-items: center; gap: 10px; width: calc(100% - 16px); margin: 4px 8px 6px; padding: 9px 12px; border-radius: 12px; border: 1px solid transparent; background: transparent; font-weight: 600; text-align: left; }
+  .lib-home:hover { background: var(--surface-2); }
+  .lib-home.active { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 35%, transparent); }
+  .lib-home svg { width: 18px; height: 18px; color: var(--accent); }
+  .lib-home .dot { margin-left: auto; width: 8px; height: 8px; border-radius: 50%; background: var(--ok); }
+  /* Activity grid (weeks across, days of the week down) */
+  .heat-wrap { margin-top: 14px; overflow-x: auto; padding-bottom: 4px; }
+  .heat { display: grid; grid-auto-flow: column; grid-template-rows: 16px repeat(7, 12px); grid-auto-columns: 12px; gap: 3px; width: max-content; }
+  .heat .mon { grid-row: 1; font-size: 10.5px; color: var(--muted); white-space: nowrap; line-height: 14px; }
+  .heat .wd { grid-column: 1; font-size: 10px; color: var(--muted); line-height: 12px; width: 30px; overflow: visible; }
+  .heat .sq { width: 12px; height: 12px; border-radius: 3px; border: 0; padding: 0; background: var(--surface-2); }
+  .heat .sq.l1 { background: color-mix(in srgb, var(--accent) 30%, var(--surface-2)); }
+  .heat .sq.l2 { background: color-mix(in srgb, var(--accent) 52%, var(--surface-2)); }
+  .heat .sq.l3 { background: color-mix(in srgb, var(--accent) 75%, var(--surface-2)); }
+  .heat .sq.l4 { background: var(--accent); }
+  .heat .sq.has { cursor: pointer; }
+  .heat .sq.has:hover { outline: 2px solid var(--text); outline-offset: 1px; }
+  .heat .sq.new { box-shadow: inset 0 0 0 1.5px var(--warn); }
+  .heat .sq.today { outline: 1.5px solid var(--muted); outline-offset: 1px; }
+  .heat .sq.future { visibility: hidden; }
+  .heat-foot { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 8px; font-size: 12px; color: var(--muted); }
+  .legend { display: inline-flex; align-items: center; gap: 3px; }
+  .legend .sq.l0 { background: var(--surface-2); } .legend .sq.l1 { background: color-mix(in srgb, var(--accent) 30%, var(--surface-2)); }
+  .legend .sq.l2 { background: color-mix(in srgb, var(--accent) 52%, var(--surface-2)); } .legend .sq.l3 { background: color-mix(in srgb, var(--accent) 75%, var(--surface-2)); }
+  .legend .sq.l4 { background: var(--accent); }
+  .legend .sq { display: inline-block; width: 11px; height: 11px; border-radius: 3px; }
+  .legend .newkey { display: inline-block; width: 11px; height: 11px; border-radius: 3px; box-shadow: inset 0 0 0 1.5px var(--warn); margin: 0 4px 0 12px; }
   .panel { background: var(--surface); overflow-y: auto; min-height: 0; }
   #library { border-right: 1px solid var(--border); display: flex; flex-direction: column; }
   #details { border-left: 1px solid var(--border); padding: 20px; }
@@ -309,7 +381,8 @@
     #details.open { transform: none; }
   }
   @media (max-width: 899px) {
-    main { grid-template-columns: minmax(0, 1fr); }
+    main, .app.is-home main { grid-template-columns: minmax(0, 1fr); }
+    .home { padding: 20px 16px 40px; }
     #library-toggle { display: inline-grid; }
     .brand { display: none; }
     #library {
@@ -354,7 +427,7 @@
     <button class="icon-btn" id="library-toggle" aria-label="Show library" title="Library">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
     </button>
-    <div class="brand">
+    <div class="brand" id="brand" role="button" tabindex="0" title="Home" style="cursor:pointer">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v5M8 22h8"/></svg>
       Recorder Playback
     </div>
@@ -399,6 +472,10 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>
         </button>
       </div>
+      <button class="lib-home server-only" id="lib-home">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11 12 4l9 7"/><path d="M5 10v10h14V10"/></svg>
+        Home &amp; sync <span class="dot hidden" id="lib-home-dot" title="Recorder connected"></span>
+      </button>
       <div class="lib-actions server-only hidden" id="lib-actions">
         <button class="btn small" id="process-all"></button>
       </div>
@@ -407,6 +484,7 @@
 
     <!-- Transcript / pending -->
     <div class="content">
+      <div class="home" id="home"><div class="home-inner" id="home-inner"></div></div>
       <div class="toolbar" id="toolbar">
         <label class="search">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
@@ -726,6 +804,7 @@
   }
 
   function updateNav() {
+    $('lib-home').classList.toggle('active', state.view === 'home');
     const i = state.library.findIndex(d => d.date === state.date);
     // Library is newest first, so "previous" (older) is further down the list
     $('prev-day').disabled = i < 0 || i >= state.library.length - 1;
@@ -737,6 +816,7 @@
     if (target) go(target.date);
   }
   function go(date) {
+    if (!date) { if (location.hash) history.pushState(null, '', location.pathname); showHome(); return; }
     if (location.hash.slice(1) !== date) location.hash = date;  // hashchange opens it
     else openDay(date);
   }
@@ -752,8 +832,7 @@
     state.jobs = r.jobs;
     renderJobPill();
 
-    if (!state.library.length) { showEmptyServer(); schedulePoll(10000); return; }
-    if ($('app').classList.contains('hidden')) { showApp(); schedulePoll(r.busy ? 2500 : 20000); return; }
+    if ($('app').classList.contains('hidden')) { showApp(); schedulePoll(r.busy ? 2500 : 5000); return; }
 
     renderLibrary(); updateNav();
     for (const d of state.library) {
@@ -769,7 +848,8 @@
     if (cur && !isReady()) renderPending();
     if (cur && isReady()) renderBanner();
     if (!quiet) toast(`Library up to date · ${plural(state.library.length, 'day')}`);
-    schedulePoll(r.busy ? 2500 : 20000);
+    if (state.view === 'home') { renderHome(); if (!state.sync?.job?.running) refreshSync(); }
+    schedulePoll(r.busy ? 2500 : state.view === 'home' ? 5000 : 20000);
   }
   function schedulePoll(ms) {
     clearTimeout(state.pollTimer);
@@ -792,26 +872,317 @@
     refreshLibrary();
   }
 
+  // ---------- Home: setup, recorder sync, transcription status, recent days ----------
+  const HOME_ICONS = {
+    mic: '<rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v5M8 22h8"/>',
+    usb: '<path d="M10 7V3h4v4"/><rect x="7" y="7" width="10" height="14" rx="2"/><path d="M10 11h4"/>',
+    wave: '<path d="M3 12h2M7 8v8M11 5v14M15 9v6M19 11v2"/>',
+    gear: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>',
+    cal: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>',
+    check: '<path d="M20 6 9 17l-5-5"/>',
+    alert: '<circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/>',
+  };
+  const LANGS = [['', 'Detect automatically'], ['en', 'English'], ['es', 'Spanish'], ['fr', 'French'], ['de', 'German'],
+    ['it', 'Italian'], ['pt', 'Portuguese'], ['nl', 'Dutch'], ['ja', 'Japanese'], ['zh', 'Chinese']];
+  const fmtBytes = b => b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : b >= 1e6 ? `${Math.round(b / 1e6)} MB` : `${Math.max(1, Math.round(b / 1e3))} KB`;
+
+  function showHome() {
+    if (state.view === 'day') savePosition();
+    state.view = 'home';
+    state.date = null;
+    state.openToken++;
+    audio.pause();
+    $('app').classList.add('is-home');
+    $('title').textContent = 'Recorder Playback';
+    document.title = 'Recorder Playback';
+    closeDrawers();
+    renderHome(); renderLibrary(); updateNav();
+    $('home').scrollTop = 0;
+  }
+
+  async function loadSettings(fresh = false) {
+    try {
+      const r = await api('/api/settings' + (fresh ? '?fresh=true' : ''));
+      state.settings = r.settings; state.checks = r.checks; state.syncMode = r.sync_mode;
+    } catch (e) { toast(`Couldn't load settings: ${e.message}`); }
+    if (state.view === 'home') renderHome();
+  }
+
+  async function refreshSync() {
+    try {
+      const r = await api('/api/sync');
+      const was = state.sync?.job;
+      state.sync = r;
+      // A sync just finished: tell the user and refresh the library so the new days appear
+      if (was?.running && !r.job.running) {
+        if (r.job.error) toast(`Sync stopped: ${r.job.error}`);
+        else toast(`${r.mode === 'move' ? 'Moved' : 'Copied'} ${plural(r.job.files_done, 'recording')}`
+          + (state.settings?.auto_transcribe ? '. Transcribing now.' : '. Press Transcribe when you’re ready.'));
+        refreshLibrary();
+      }
+    } catch { /* server busy; next poll */ }
+    $('lib-home-dot').classList.toggle('hidden', !(state.sync?.recorders || []).some(r => r.new > 0));
+    if (state.view === 'home') renderHome();
+    if (state.sync?.job?.running) { clearTimeout(state.syncTimer); state.syncTimer = setTimeout(refreshSync, 1000); }
+  }
+
+  async function startSync(rec) {
+    if (state.syncMode === 'move' && !confirm(`Move ${plural(rec.new, 'recording')} off ${rec.label}? They'll be deleted from the recorder after each copy is checked.`)) return;
+    try {
+      state.sync.job = await api('/api/sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ root: rec.root }) });
+
+    } catch (e) { toast(e.message); }
+    refreshSync();
+  }
+
+  async function saveSettings(patch, msg) {
+    try {
+      const r = await api('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) });
+      state.settings = r.settings;
+      if (msg) toast(msg);
+    } catch (e) { toast(`Couldn't save: ${e.message}`); }
+    renderHome(true);
+    refreshLibrary();
+  }
+
+  function card(icon, title, cls = '') {
+    const c = el('section', 'card ' + cls);
+    const h = el('h3'); h.append(svg(HOME_ICONS[icon]), el('span', null, title));
+    c.append(h);
+    return c;
+  }
+  function btn(label, cls, onclick) { const b = el('button', 'btn ' + cls, label); b.onclick = onclick; return b; }
+  function progressBar(frac, left, right) {
+    const p = el('div', 'progress');
+    const bar = el('div', 'bar' + (frac ? '' : ' indeterminate')); const fill = el('i'); fill.style.width = `${(frac || 0) * 100}%`; bar.append(fill);
+    const lbl = el('div', 'lbl'); lbl.append(el('span', null, left), el('span', null, right || ''));
+    p.append(bar, lbl);
+    return p;
+  }
+
+  function checksList() {
+    const ul = el('ul', 'checks');
+    const names = { hf: 'Speaker detection models (Hugging Face)', ffmpeg: 'Audio tools (ffmpeg)', gpu: 'Graphics card', record_dir: 'Recordings folder' };
+    for (const [k, label] of Object.entries(names)) {
+      const c = state.checks?.[k]; if (!c) continue;
+      const li = el('li');
+      const icon = el('span', c.ok ? 'ok' : 'bad'); icon.append(svg(c.ok ? HOME_ICONS.check : HOME_ICONS.alert)); icon.firstChild.style.width = '18px';
+      const txt = el('div'); txt.append(el('div', null, label), el('div', 'd', c.detail));
+      li.append(icon, txt); ul.append(li);
+    }
+    return ul;
+  }
+
+  function settingsForm(onSave, saveLabel) {
+    const s = state.settings || {};
+    const form = el('div', 'form');
+    const auto = el('input', 'switch'); auto.type = 'checkbox'; auto.checked = !!s.auto_transcribe;
+    const l1 = el('label', 'row-l'); const t1 = el('div');
+    t1.append(el('div', null, 'Transcribe new recordings automatically'), el('div', 'hint', 'Off: new days wait until you press Transcribe. On: they start as soon as they arrive.'));
+    l1.append(t1, auto);
+    const lang = el('select'); LANGS.forEach(([v, n]) => { const o = el('option', null, n); o.value = v; lang.append(o); }); lang.value = s.language || '';
+    const l2 = el('label', 'row-l'); const t2 = el('div');
+    t2.append(el('div', null, 'Language'), el('div', 'hint', 'Choosing it avoids mistakes when a day starts with noise.'));
+    l2.append(t2, lang);
+    const rustle = el('select'); [['1', 'Strong (recommended)'], ['0.5', 'Gentle'], ['0', 'Off']].forEach(([v, n]) => { const o = el('option', null, n); o.value = v; rustle.append(o); });
+    rustle.value = String(s.rustle_strength ?? 1) === '1' ? '1' : String(s.rustle_strength);
+    const l3 = el('label', 'row-l'); const t3 = el('div');
+    t3.append(el('div', null, 'Clothing-rustle cleanup'), el('div', 'hint', 'Turns down the scratchy sound of the mic rubbing on clothes. Voices are left alone.'));
+    l3.append(t3, rustle);
+    form.append(l1, l2, l3);
+    const actions = el('div', 'actions');
+    actions.append(btn(saveLabel, 'primary', () => onSave({ auto_transcribe: auto.checked, language: lang.value, rustle_strength: +rustle.value })));
+    form.append(actions);
+    return form;
+  }
+
+  // GitHub-style activity grid: one square per day, weeks as columns, shaded by recordings that day
+  function activityCard() {
+    const iso = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    const byDate = Object.fromEntries(state.library.map(d => [d.date, d]));
+    const now = new Date(); now.setHours(0, 0, 0, 0);
+    // Run to the latest recording too, in case the recorder's clock is ahead of this computer's
+    const latest = state.library.length ? toDate(state.library[0].date) : now;
+    const today = latest > now ? latest : now;
+    const start = new Date(today); start.setDate(start.getDate() - 52 * 7 - today.getDay());  // a Sunday, ~1 year back
+    const level = n => !n ? 0 : n === 1 ? 1 : n <= 3 ? 2 : n <= 6 ? 3 : 4;
+
+    const c = card('cal', 'Recording activity');
+    const grid = el('div', 'heat');
+    ['', 'Mon', '', 'Wed', '', 'Fri', ''].forEach((t, i) => { const w = el('span', 'wd', t); w.style.gridRow = i + 2; grid.append(w); });
+    let lastMonth = -1, days = 0, recs = 0, streak = 0, best = 0;
+    for (let w = 0, d = new Date(start); d <= today || d.getDay() !== 0; w++) {
+      for (let dow = 0; dow < 7; dow++, d.setDate(d.getDate() + 1)) {
+        if (dow === 0 && d.getMonth() !== lastMonth && d.getDate() <= 7) {
+          lastMonth = d.getMonth();
+          const m = el('span', 'mon', d.toLocaleDateString(undefined, { month: 'short' }));
+          m.style.gridColumn = `${w + 2} / span 3`;
+          grid.append(m);
+        }
+        const key = iso(d), info = byDate[key], n = info?.recordings || 0;
+        const sq = el('button', `sq l${level(n)}` + (info ? ' has' : '') + (info?.status === 'pending' ? ' new' : '')
+          + (key === iso(now) ? ' today' : '') + (d > today ? ' future' : ''));
+        sq.style.gridColumn = w + 2; sq.style.gridRow = dow + 2;
+        const when = d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+        sq.title = info
+          ? `${when}: ${plural(n, 'recording')}, ${fmtDur(info.duration)}` + (info.status === 'pending' ? ' (not transcribed yet)' : '')
+          : `${when}: no recordings`;
+        sq.setAttribute('aria-label', sq.title);
+        if (info) sq.onclick = () => go(key); else sq.tabIndex = -1;
+        grid.append(sq);
+        if (d <= today) {
+          if (n) { days++; recs += n; streak++; best = Math.max(best, streak); } else streak = 0;
+        }
+      }
+    }
+    const wrap = el('div', 'heat-wrap'); wrap.append(grid);
+    c.append(el('p', null, days ? `${plural(recs, 'recording')} on ${plural(days, 'day')} in the last year · longest run ${plural(best, 'day')} in a row` : 'Days you record on will light up here.'));
+    c.append(wrap);
+    const foot = el('div', 'heat-foot');
+    const legend = el('span', 'legend'); legend.append('Less ');
+    for (let i = 0; i <= 4; i++) { const k = el('span', 'sq heat-k'); k.className = `sq l${i}`; legend.append(k); }
+    legend.append(' More');
+    const nk = el('span', 'newkey'); legend.append(nk, 'not transcribed');
+    foot.append(el('span', null, 'Click a day to open it'), legend);
+    c.append(foot);
+    // Start scrolled to the most recent weeks on narrow screens
+    requestAnimationFrame(() => { wrap.scrollLeft = wrap.scrollWidth; });
+    return c;
+  }
+
+  // Forms are reused between refreshes so half-made choices aren't wiped by the 5-second poll
+  function cachedForm(kind, onSave, label) {
+    const key = JSON.stringify(state.settings);
+    state.forms = state.forms || {};
+    if (state.forms[kind]?.key !== key) state.forms[kind] = { key, node: settingsForm(onSave, label) };
+    return state.forms[kind].node;
+  }
+
+  function renderHome(force = false) {
+    if (state.view !== 'home') return;
+    // Don't redraw under someone who is using a form or button on the page
+    if (!force && $('home').contains(document.activeElement) && document.activeElement.matches('select, input')) return;
+    // Only redraw when something shown here actually changed (keeps buttons stable under the cursor)
+    const sig = JSON.stringify([state.library, state.jobs, state.sync, state.settings, state.checks, state.renames]);
+    if (!force && sig === state.homeSig && $('home-inner').childElementCount) return;
+    state.homeSig = sig;
+    const inner = $('home-inner');
+    const lib = state.library;
+    const s = state.settings || {};
+    const frag = document.createDocumentFragment();
+
+    const pending = lib.filter(d => d.status === 'pending' && !d.job);
+    const ready = lib.filter(d => d.status === 'ready');
+    $('subtitle').textContent = lib.length ? `${plural(lib.length, 'day')} · ${ready.length} transcribed` : 'No recordings yet';
+
+    const hello = el('div');
+    hello.append(el('h2', 'hello', s.setup_done ? 'Welcome back' : 'Welcome'),
+      el('p', 'lead', s.setup_done ? 'Plug in the recorder and sync, or pick a day to listen to.' : 'Two quick steps: check the setup below, then sync your recorder. Nothing is transcribed until you say so.'));
+    frag.append(hello);
+
+    // 2. Recorder sync: only shown when a plugged-in drive has recordings that aren't copied yet
+    const sync = state.sync || {};
+    const job = sync.job || {};
+    const recs = (sync.recorders || []).filter(r => r.new > 0);
+    if (job.running || recs.length) {
+      const verb = sync.mode === 'move' ? 'Move' : 'Copy';
+      const rc = card('usb', job.running ? `${verb === 'Move' ? 'Moving' : 'Copying'} from ${job.label}` : `New recordings on ${recs[0].label}`, 'attention sync-card');
+      if (job.running) {
+        rc.append(el('p', null, 'Keep the recorder plugged in until this finishes.'));
+        rc.append(progressBar(job.bytes_total ? job.bytes_done / job.bytes_total : 0,
+          `${job.current || 'Starting'} (${Math.min(job.files_done + 1, job.files_total)} of ${job.files_total})`,
+          job.bytes_total ? `${fmtBytes(job.bytes_done)} of ${fmtBytes(job.bytes_total)}` : ''));
+      } else {
+        for (const r of recs) {
+          if (recs.length > 1) rc.append(el('div', 'sync-dev', r.label));
+          rc.append(el('p', 'sync-what', `${plural(r.new, 'new recording')} (${fmtBytes(r.new_bytes)}) from ${r.days.map(shortDate).join(', ')}`
+            + (r.quality ? ` · ${r.quality}` : '')));
+          const a = el('div', 'actions');
+          a.append(btn(`${verb === 'Move' ? 'Move' : 'Sync'} ${plural(r.new, 'recording')}`, 'primary big', () => startSync(r)));
+          rc.append(a);
+        }
+        rc.append(el('p', 'note', (s.auto_transcribe
+            ? 'Auto-transcribe is on: these days start transcribing as soon as they’re copied.'
+            : 'Auto-transcribe is off: after copying, the days wait for you to press Transcribe.')
+          + (sync.mode === 'move' ? ' Recordings are deleted from the recorder once each copy is checked.' : ' Recordings stay on the recorder too.')));
+      }
+      frag.append(rc);
+    }
+
+    // 1. First-run setup
+    if (state.settings && !s.setup_done) {
+      const c = card('gear', 'Set up', 'attention');
+      c.append(el('p', null, 'Check that everything is ready, choose how you want it to work, then save.'));
+      c.append(checksList(), cachedForm('setup', p => saveSettings({ ...p, setup_done: true }, 'Setup saved'), 'Save and finish setup'));
+      frag.append(c);
+    }
+
+    frag.append(activityCard());
+
+    // 3. Transcription status
+    const jobs = state.jobs || {};
+    const failed = lib.filter(d => d.job?.status === 'failed');
+    const tc = card('wave', 'Transcription');
+    if (jobs.current) {
+      const cur = jobs.current;
+      tc.append(el('p', null, `Working on ${longDate(cur.date)}` + ((jobs.queued || []).length ? ` · ${(jobs.queued || []).length} more waiting` : '')));
+      tc.append(progressBar(cur.progress, cur.label + '…', cur.progress ? `${Math.round(cur.progress * 100)}%` : ''));
+      const a = el('div', 'actions'); a.append(btn('Watch it', 'small', () => go(cur.date))); tc.append(a);
+    } else if ((jobs.queued || []).length) {
+      tc.append(el('p', null, `${plural(jobs.queued.length, 'day')} waiting to start.`));
+    } else {
+      tc.append(el('p', null, pending.length ? `${plural(pending.length, 'day')} not transcribed yet.` : lib.length ? 'Everything is transcribed.' : 'Nothing to transcribe yet. Sync the recorder first.'));
+    }
+    if (failed.length) tc.append(el('div', 'error-box', `${shortDate(failed[0].date)} failed: ${failed[0].job.error}`));
+    const ta = el('div', 'actions');
+    if (pending.length) ta.append(btn(pending.length > 1 ? `Transcribe all ${pending.length} days` : `Transcribe ${shortDate(pending[0].date)}`, jobs.current ? '' : 'primary', () => transcribe(pending.map(d => d.date).reverse())));
+    tc.append(ta);
+    tc.append(el('p', 'note', s.auto_transcribe ? 'Auto-transcribe is on: new recordings start by themselves.' : 'Auto-transcribe is off: new days wait for you. Change it in Settings below.'));
+    frag.append(tc);
+
+    // 4. Recent days
+    if (lib.length) {
+      const dc = card('cal', 'Your days');
+      const tiles = el('div', 'tiles');
+      for (const d of lib.slice(0, 8)) {
+        const t = el('button', 'tile');
+        const t1 = el('div', 't1'); t1.append(el('span', null, shortDate(d.date)));
+        if (d.job?.status === 'processing') t1.append(el('span', 'chip processing', `${Math.round((d.job.progress || 0) * 100)}%`));
+        else if (d.job) t1.append(el('span', 'chip ' + d.job.status, d.job.status === 'failed' ? 'Failed' : 'Queued'));
+        else if (d.status === 'pending') t1.append(el('span', 'chip pending', 'New'));
+        t.append(t1, el('div', 't2', [fmtDur(d.duration), plural(d.recordings || 0, 'recording')].join(' · ')));
+        if (d.speakers?.length) t.append(el('div', 't2', d.speakers.slice(0, 3).map(displayName).join(', ')));
+        t.onclick = () => go(d.date);
+        tiles.append(t);
+      }
+      dc.append(tiles);
+      if (lib.length > 8) dc.append(el('p', 'note', `All ${lib.length} days are in the library on the left.`));
+      frag.append(dc);
+    }
+
+    // 5. Settings (after setup)
+    if (state.settings && s.setup_done) {
+      const det = el('details', 'card');
+      det.id = 'settings-card';
+      const sum = el('summary'); sum.append(svg(HOME_ICONS.gear), el('span', null, 'Settings'));
+      det.append(sum, checksList(), cachedForm('settings', p => saveSettings(p, 'Settings saved'), 'Save settings'));
+      det.open = !!state.settingsOpen;
+      det.ontoggle = () => { state.settingsOpen = det.open; };
+      frag.append(det);
+    }
+    inner.replaceChildren(frag);
+  }
+
   // ---------- Opening a day ----------
+  // The app opens on Home; a day opens only when picked (or from a #YYYY-MM-DD link)
   function showApp() {
     $('empty').classList.add('hidden');
     $('app').classList.remove('hidden');
     renderLibrary();
-    const want = location.hash.slice(1);
-    const last = store.get('lastDate');
-    // Prefer the link/last-viewed day, else the newest day that has a transcript
-    const date = [want, last].find(d => d && libItem(d))
-      || (state.library.find(d => d.status === 'ready') || libItem(state.jobs?.current?.date) || state.library[0]).date;
-    history.replaceState(null, '', '#' + date);
-    openDay(date);
-  }
-
-  function showEmptyServer() {
-    $('app').classList.add('hidden');
-    $('empty').classList.remove('hidden');
-    $('empty-title').textContent = 'No recordings found';
-    $('empty-text').replaceChildren('Copy recordings from your voice recorder into ', el('code', null, state.recordDir || 'RECORD'),
-      '. They\'ll show up here automatically.');
+    const want = decodeURIComponent(location.hash.slice(1));
+    if (want && libItem(want)) openDay(want);
+    else if (state.server) { history.replaceState(null, '', location.pathname); showHome(); }
+    else openDay(state.library[0].date);   // file mode has no home page
   }
 
   function normalizeSources(src) {
@@ -822,6 +1193,8 @@
 
   async function openDay(date, opts = {}) {
     if (!libItem(date)) return;
+    state.view = 'day';
+    $('app').classList.remove('is-home');
     const token = ++state.openToken;
     let data, fileAudio = null;
     if (state.server) {
@@ -844,7 +1217,6 @@
     state.renames = state.server ? {} : store.get('renames', {});
     if (!keep) state.hidden = new Set();
     state.activeIdx = -1; state.activeSrc = -1;
-    store.set('lastDate', date);
     closeDrawers();
 
     state.colors = {};
@@ -1443,6 +1815,9 @@
   $('prev-day').onclick = () => stepDay(-1);
   $('next-day').onclick = () => stepDay(1);
   $('refresh-btn').onclick = () => refreshLibrary(false);
+  $('lib-home').onclick = () => go('');
+  $('brand').onclick = () => state.server && go('');
+  $('brand').onkeydown = e => { if (e.key === 'Enter') $('brand').onclick(); };
   $('job-pill').onclick = () => { const d = $('job-pill').dataset.date; if (d) { go(d); closeDrawers(); } };
   $('process-all').onclick = () => transcribe(state.library.filter(d => d.status === 'pending' && !d.job).map(d => d.date).reverse());
   $('banner-btn').onclick = () => askTranscribe('Re-transcribe this day');
@@ -1480,7 +1855,8 @@
   });
   window.addEventListener('hashchange', () => {
     const d = decodeURIComponent(location.hash.slice(1));
-    if (d && d !== state.date && libItem(d)) openDay(d);
+    if (!d) { if (state.server && state.view !== 'home') showHome(); }
+    else if (d !== state.date && libItem(d)) openDay(d);
   });
   document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshLibrary(); });
 
@@ -1620,7 +1996,7 @@
   // When served by app.py, load the library straight from the server
   if (location.protocol.startsWith('http')) {
     document.body.classList.add('server');  // avoid flashing the folder picker while loading
-    api('/api/library').then(() => { state.server = true; refreshLibrary(); })
+    api('/api/library').then(() => { state.server = true; loadSettings(); refreshSync(); refreshLibrary(); })
       .catch(() => document.body.classList.remove('server'));
   }
 })();

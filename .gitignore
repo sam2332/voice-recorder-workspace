@@ -18,3 +18,5 @@ processed_daily/
 .claude/settings.local.json
 
 .env
+# Personal settings chosen in the viewer
+IngressScript/settings.json

@@ -18,7 +18,7 @@ A personal pipeline for voice-recorder audio. It has two pieces:
 
   Elements marked `.file-only` or `.server-only` are toggled by the mode. All page state lives inside an IIFE, and there is no global API.
 
-There is no build step, test suite or linter. The platform is Windows; use the venv at `.venv` (Python 3.12). Docker (`docker compose up -d --build`) runs the same app on Linux with the GPU.
+There is no build step, test suite or linter. The platform is Windows; use the venv at `.venv` (Python 3.12).
 
 ## Commands
 
@@ -28,7 +28,6 @@ There is no build step, test suite or linter. The platform is Windows; use the v
 .venv\Scripts\python IngressScript\app.py --no-serve [--force] [--min-speakers N]   # batch in the terminal
 .venv\Scripts\python IngressScript\app.py --speakers | --rename OLD NEW | --merge OLD INTO
 .venv\Scripts\python -m py_compile IngressScript\app.py
-docker compose up -d --build; docker compose logs -f
 ```
 
 A full run needs:
@@ -98,8 +97,24 @@ A 2.5-hour day takes about 4 minutes to diarize on the RTX 5060 Ti.
 - `bytes` lets `needs_processing` notice that a recording has grown since the day was transcribed (for example, it was still being copied).
 - Older transcripts that store `sources` as plain filenames are upgraded on the fly by `transcript_sources()`.
 
+**Settings:**
+- `settings.json` sits next to the voice DB (`SETTINGS_PATH`). It holds `setup_done`, `auto_transcribe`, `language` and `rustle_strength`, edited through `GET` and `POST /api/settings`.
+- Read it with `setting(key)` at runtime; don't cache it in constants.
+- The watcher queues nothing until `auto_transcribe` is true. That is the "nothing happens before setup" guarantee.
+- Env `LANGUAGE` and `RUSTLE_STRENGTH` only seed the defaults.
+
+**Recorder sync:**
+- `find_recorders()` checks every removable or fixed drive (`GetLogicalDrives`/`GetDriveTypeW` on Windows; `/media`, `/mnt` and similar elsewhere), plus `SYNC_SOURCES`. A drive counts as a recorder when its root has a `RECORD` folder and `SETTINGS.TXT`, matched case-insensitively. The local `RECORD_DIR` is excluded.
+- `Syncer` copies each file to `<name>.part` in 4 MB chunks with progress, runs `copystat` (so the watcher doesn't wait out its 60 s settle time), checks the size, then renames. With `SYNC_MODE=move` it deletes the source only after that check.
+- Routes: `GET /api/sync` returns `{recorders, job, mode}`; `POST /api/sync` takes `{root}`.
+- Docker support was removed: Docker Desktop on Windows cannot see removable drives (even with an explicit `E:/` bind mount), so sync could not work there.
+
+**Viewer home:**
+- With no `#date` in the URL the app opens on Home (`state.view = 'home'`, `.app.is-home`). Home shows setup, sync, the activity grid (`activityCard`: 53 week columns × 7 rows, levels 1 / 2–3 / 4–6 / 7+ recordings), transcription status and recent days.
+- Home polls every 5 s. `renderHome` reuses the form nodes (`cachedForm`) and skips redrawing while a form control has focus, so in-progress choices survive.
+
 **Server and background processing:**
-- By default `serve(auto_process=True)` starts `Processor.watch()`. Every 30 s it queues any day where `needs_processing` is true.
+- By default `serve(auto_process=True)` starts `Processor.watch()`. While `auto_transcribe` is on, it queues any day where `needs_processing` is true every 30 s.
 - It skips days whose files changed in the last 60 s (still copying).
 - It does not retry a failed day until that day's files change, or until the user retries from the UI.
 
@@ -112,13 +127,6 @@ A 2.5-hour day takes about 4 minutes to diarize on the RTX 5060 Ti.
 | `POST` / `DELETE /api/days/{date}/process` | Queue a day or remove it from the queue. The `POST` body is `{hint}`, where `null` reuses the previous hint and `{}` means auto. |
 | `GET /audio/{name}`, `GET /recordings/{name}` | Range-capable file responses. |
 | `POST /api/speakers/rename` | Body `{old, new, merge}`. |
-
-**Docker:**
-- The image is `nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04`, with the venv at `/opt/venv`.
-- `RECORD_PATH` (default `./RECORD`) is mounted read-only at `/data/RECORD`.
-- `./IngressScript` is mounted at `/data/state`, so local and Docker runs share transcripts and the DB.
-- The model cache is a named volume mounted at `/models` (`HF_HOME`).
-- The port is published on `127.0.0.1` only.
 
 ## Library version gotchas
 

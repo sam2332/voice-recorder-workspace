@@ -80,6 +80,187 @@ def log(msg: str):
     print(msg, flush=True)
 
 
+# --- SETTINGS (chosen in the viewer; stored next to the voice database) ---
+SETTINGS_PATH = Path(os.getenv("SETTINGS_PATH", DB_PATH.parent / "settings.json"))
+DEFAULT_SETTINGS = {
+    "setup_done": False,          # nothing is transcribed automatically until the user has been through setup
+    "auto_transcribe": False,     # transcribe new / incomplete days in the background
+    "language": LANGUAGE or "",   # "" = detect
+    "rustle_strength": RUSTLE_STRENGTH,
+}
+_settings_lock = threading.Lock()
+
+
+def load_settings() -> dict:
+    data = dict(DEFAULT_SETTINGS)
+    try:
+        data.update(json.loads(SETTINGS_PATH.read_text(encoding="utf-8")))
+    except (OSError, json.JSONDecodeError):
+        pass
+    return data
+
+
+def save_settings(patch: dict) -> dict:
+    allowed = {"setup_done": bool, "auto_transcribe": bool, "language": str, "rustle_strength": float}
+    with _settings_lock:
+        data = load_settings()
+        for key, kind in allowed.items():
+            if key in patch and patch[key] is not None:
+                data[key] = kind(patch[key])
+        data["language"] = data["language"].strip().lower()[:8]
+        data["rustle_strength"] = min(max(data["rustle_strength"], 0.0), 1.0)
+        SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = SETTINGS_PATH.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        tmp.replace(SETTINGS_PATH)
+    return data
+
+
+def setting(key: str):
+    return load_settings()[key]
+
+
+# --- RECORDER SYNC ---
+# Copy (or move) recordings off the voice recorder when it's plugged in. SYNC_MODE=move deletes
+# each file from the recorder once its copy has been verified.
+SYNC_MODE = "move" if os.getenv("SYNC_MODE", "copy").strip().lower() == "move" else "copy"
+# Extra folders to look for a recorder in (separated by ; or ,), besides the drives found automatically
+SYNC_SOURCES = [p.strip() for p in re.split(r"[;,]", os.getenv("SYNC_SOURCES", "")) if p.strip()]
+RECORDER_QUALITY = {"1": "32 kbps MP3", "2": "64 kbps MP3", "3": "128 kbps MP3", "4": "256 kbps WAV",
+                    "5": "512 kbps WAV", "6": "768 kbps WAV", "7": "1536 kbps WAV"}
+
+
+def _candidate_roots() -> list[Path]:
+    roots = [Path(p) for p in SYNC_SOURCES]
+    if sys.platform == "win32":
+        import ctypes
+        k32 = ctypes.windll.kernel32
+        mask = k32.GetLogicalDrives()
+        for i in range(26):
+            if mask & (1 << i):
+                root = f"{chr(65 + i)}:\\"
+                # 2 = removable, 3 = fixed. Network and optical drives are skipped (slow / never a recorder).
+                if k32.GetDriveTypeW(ctypes.c_wchar_p(root)) in (2, 3):
+                    roots.append(Path(root))
+    else:
+        for pattern in ("/media/*", "/media/*/*", "/mnt/*", "/run/media/*/*", "/Volumes/*"):
+            roots += [Path(p) for p in __import__("glob").glob(pattern)]
+    return roots
+
+
+def _volume_label(root: Path) -> str:
+    if sys.platform == "win32":
+        import ctypes
+        buf = ctypes.create_unicode_buffer(261)
+        if ctypes.windll.kernel32.GetVolumeInformationW(ctypes.c_wchar_p(str(root)), buf, 261,
+                                                        None, None, None, None, 0):
+            return f"{buf.value or 'Drive'} ({str(root).rstrip(chr(92))})"
+    return root.name or str(root)
+
+
+def _child(folder: Path, name: str) -> Path | None:
+    """Case-insensitive child lookup (FAT drives and Linux mounts differ in case)."""
+    try:
+        return next((p for p in folder.iterdir() if p.name.lower() == name.lower()), None)
+    except OSError:
+        return None
+
+
+def find_recorders() -> list[dict]:
+    """Drives that look like the voice recorder: a RECORD folder next to SETTINGS.TXT."""
+    found, seen = [], set()
+    local = INPUT_DIR.resolve() if INPUT_DIR.exists() else INPUT_DIR
+    for root in _candidate_roots():
+        try:
+            rec, cfg = _child(root, "RECORD"), _child(root, "SETTINGS.TXT")
+            if not rec or not rec.is_dir() or not cfg or rec.resolve() == local or str(rec.resolve()) in seen:
+                continue
+            seen.add(str(rec.resolve()))
+            files = sorted(f for f in rec.iterdir() if f.is_file() and FILE_PATTERN.match(f.name))
+            new = [f for f in files if not ((INPUT_DIR / f.name).exists()
+                                            and (INPUT_DIR / f.name).stat().st_size == f.stat().st_size)]
+            quality = re.search(r"^BIT:(\d)", cfg.read_text(encoding="utf-8", errors="ignore"), re.M)
+            found.append({
+                "root": str(root), "label": _volume_label(root), "total": len(files),
+                "new": len(new), "new_bytes": sum(f.stat().st_size for f in new),
+                "days": sorted({FILE_PATTERN.match(f.name).group(1) for f in new}),
+                "quality": RECORDER_QUALITY.get(quality.group(1)) if quality else None,
+            })
+        except OSError:
+            continue
+    return found
+
+
+class Syncer:
+    """Copies new recordings from the recorder into RECORD_DIR in the background, with progress."""
+
+    def __init__(self, on_done=None):
+        self.lock = threading.Lock()
+        self.state: dict = {"running": False}
+        self.on_done = on_done   # called with the dates that received new recordings
+
+    def status(self) -> dict:
+        with self.lock:
+            return dict(self.state)
+
+    def start(self, root: str) -> dict:
+        with self.lock:
+            if self.state.get("running"):
+                return dict(self.state)
+            match = next((r for r in find_recorders() if r["root"] == root), None)
+            if not match:
+                raise FileNotFoundError("The recorder isn't connected any more.")
+            self.state = {"running": True, "root": root, "label": match["label"], "mode": SYNC_MODE,
+                          "files_done": 0, "files_total": match["new"], "bytes_done": 0,
+                          "bytes_total": match["new_bytes"], "current": None, "error": None,
+                          "copied": [], "days": match["days"], "started": time.time()}
+        threading.Thread(target=self._run, args=(Path(root),), daemon=True, name="recorder-sync").start()
+        return self.status()
+
+    def _set(self, **kw):
+        with self.lock:
+            self.state.update(kw)
+
+    def _run(self, root: Path):
+        try:
+            rec = _child(root, "RECORD")
+            INPUT_DIR.mkdir(parents=True, exist_ok=True)
+            for src in sorted(f for f in rec.iterdir() if f.is_file() and FILE_PATTERN.match(f.name)):
+                dst = INPUT_DIR / src.name
+                size = src.stat().st_size
+                if dst.exists() and dst.stat().st_size == size:
+                    if SYNC_MODE == "move":
+                        src.unlink()   # already safely in the library
+                    continue
+                self._set(current=src.name)
+                part = dst.with_name(dst.name + ".part")
+                with open(src, "rb") as fi, open(part, "wb") as fo:
+                    while chunk := fi.read(4 << 20):
+                        fo.write(chunk)
+                        with self.lock:
+                            self.state["bytes_done"] += len(chunk)
+                shutil.copystat(src, part)   # keep the recording's own timestamp
+                if part.stat().st_size != size:
+                    raise IOError(f"Copy of {src.name} came out the wrong size; the recorder copy was kept.")
+                part.replace(dst)
+                if SYNC_MODE == "move":
+                    src.unlink()
+                with self.lock:
+                    self.state["files_done"] += 1
+                    self.state["copied"].append(src.name)
+            log(f"[sync] {'Moved' if SYNC_MODE == 'move' else 'Copied'} {self.state['files_done']} recording(s) from {root}")
+            days = sorted({FILE_PATTERN.match(n).group(1) for n in self.state["copied"]})
+            if days and self.on_done:
+                self.on_done(days)
+        except Exception as e:
+            log(f"[sync] failed: {e}")
+            self._set(error=str(e))
+            for p in INPUT_DIR.glob("*.part"):
+                p.unlink(missing_ok=True)
+        finally:
+            self._set(running=False, current=None, finished=time.time())
+
+
 # --- DATABASE SETUP ---
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -169,8 +350,10 @@ def prepare_daily_audio(date_str: str, file_list: list[Path]) -> Path:
     # Sidecar records which recordings the WAV was built from, so new recordings trigger a rebuild
     manifest = OUTPUT_DIR / f"{date_str}_merged.sources.json"
     mask_path = rustle_mask_path(date_str)
-    # Rebuilt when the recordings (or the rustle setting) change
-    names = {"files": [[f.name, f.stat().st_size] for f in file_list], "rustle": RUSTLE_STRENGTH}
+    # Rebuilt when the recordings, their levels, or the rustle setting change
+    strength = setting("rustle_strength")
+    levels = {f.name: {k: v for k, v in clip_levels(f.name).items() if k != "reviewed"} for f in file_list}
+    names = {"files": [[f.name, f.stat().st_size] for f in file_list], "rustle": strength, "levels": levels}
     if merged_path.exists() and manifest.exists() and mask_path.exists():
         try:
             if json.loads(manifest.read_text(encoding="utf-8")) == names:
@@ -178,11 +361,11 @@ def prepare_daily_audio(date_str: str, file_list: list[Path]) -> Path:
         except (OSError, json.JSONDecodeError):
             pass
 
-    # Decode every recording through the concat *filter* (not the concat demuxer), so a day can mix
-    # MP3s with the recorder's 48 kHz stereo WAVs. Then: highpass + gentle level normalisation.
+    # Decode every recording through its own chain (gain / gate / clipping repair) and join them with
+    # the concat *filter* (not the demuxer), so a day can mix MP3s with the recorder's 48 kHz WAVs.
+    # Then: highpass + gentle level normalisation.
     n = len(file_list)
-    graph = "".join(f"[{i}:a]aresample={SAMPLE_RATE},aformat=sample_fmts=fltp:channel_layouts=mono[a{i}];"
-                    for i in range(n))
+    graph = "".join(f"[{i}:a]{clip_chain(levels[f.name])}[a{i}];" for i, f in enumerate(file_list))
     graph += "".join(f"[a{i}]" for i in range(n)) + f"concat=n={n}:v=0:a=1,highpass=f=80,speechnorm=e=4:r=0.0001:l=1[out]"
     inputs = [arg for f in file_list for arg in ("-i", str(f))]
 
@@ -198,7 +381,10 @@ def prepare_daily_audio(date_str: str, file_list: list[Path]) -> Path:
         proc = subprocess.run(cmd, capture_output=True, text=True)
         if proc.returncode != 0:
             raise RuntimeError(f"ffmpeg failed merging {date_str}:\n{proc.stderr.strip()}")
-        mask = derustle_wav(tmp_path)
+        regions = [(int(src["start"] * SAMPLE_RATE), int((src["start"] + src["duration"]) * SAMPLE_RATE),
+                    strength if levels[src["name"]]["rustle"] is None else levels[src["name"]]["rustle"])
+                   for src in describe_sources(file_list)]
+        mask = derustle_wav(tmp_path, regions)
         np.save(mask_path, mask)
         log(f"      rustle suppressed in {mask.mean() * 100:.0f}% of the audio")
         tmp_path.replace(merged_path)
@@ -251,21 +437,28 @@ def suppress_rustle(x: np.ndarray, sr: int = SAMPLE_RATE, strength: float = RUST
     return out[n:n + len(x)], np.pad(mask, (0, max(0, n_hops - len(mask))))
 
 
-def derustle_wav(path: Path) -> np.ndarray:
-    """Clean a 16 kHz mono WAV in place (10-minute pieces, so multi-hour days stay light on memory).
-    Returns the rustle mask for the whole file."""
+def derustle_wav(path: Path, regions: list[tuple[int, int, float]]) -> np.ndarray:
+    """Clean a 16 kHz mono WAV in place. `regions` gives (start sample, end sample, strength) per
+    recording, so each clip can have its own rustle setting. Works in ~10-minute pieces so multi-hour
+    days stay light on memory. Returns the rustle mask for the whole file."""
     from scipy.io import wavfile
     sr, data = wavfile.read(path, mmap=True)
     piece, ctx = RUSTLE_HOP * 37500, RUSTLE_HOP * 64   # ~10 min pieces, ~1 s of context each side
     out = np.empty(len(data), np.int16)
     mask = np.zeros((len(data) + RUSTLE_HOP - 1) // RUSTLE_HOP, bool)
-    for a in range(0, len(data), piece):
-        lo, hi = max(0, a - ctx), min(len(data), a + piece + ctx)
-        y, m = suppress_rustle(data[lo:hi].astype(np.float32) / 32768, sr)
-        b = min(a + piece, len(data))
-        out[a:b] = np.clip(y[a - lo:b - lo] * 32768, -32768, 32767).astype(np.int16)
-        ma, mb = a // RUSTLE_HOP, (b + RUSTLE_HOP - 1) // RUSTLE_HOP
-        mask[ma:mb] = m[(a - lo) // RUSTLE_HOP:(a - lo) // RUSTLE_HOP + (mb - ma)]
+    # Contiguous, hop-aligned regions that cover every sample (clip lengths are rounded)
+    regions = sorted(regions) or [(0, len(data), RUSTLE_STRENGTH)]
+    starts = [0] + [r[0] // RUSTLE_HOP * RUSTLE_HOP for r in regions[1:]]
+    bounds = [(starts[i], starts[i + 1] if i + 1 < len(starts) else len(data), regions[i][2])
+              for i in range(len(regions))]
+    for r0, r1, strength in bounds:
+        for a in range(r0, r1, piece):
+            lo, hi = max(0, a - ctx), min(len(data), a + piece + ctx)
+            y, m = suppress_rustle(data[lo:hi].astype(np.float32) / 32768, sr, strength)
+            b = min(a + piece, r1)
+            out[a:b] = np.clip(y[a - lo:b - lo] * 32768, -32768, 32767).astype(np.int16)
+            ma, mb = a // RUSTLE_HOP, (b + RUSTLE_HOP - 1) // RUSTLE_HOP
+            mask[ma:mb] = m[(a - lo) // RUSTLE_HOP:(a - lo) // RUSTLE_HOP + (mb - ma)]
     del data
     tmp = path.with_suffix(".clean.wav")
     wavfile.write(tmp, sr, out)
@@ -294,6 +487,153 @@ def looks_like_noise(text: str, rustle: float, score: float | None) -> bool:
     return rustle >= 0.8 and len(words) <= 4 and (score is None or score < 0.6)
 
 
+# --- PER-CLIP LEVELS (gain, speech sensitivity, rustle cleanup, noise gate, clipping repair) ---
+# Speech sensitivity 1..5 -> Whisper voice-activity onset/offset. 3 is the normal setting.
+SENSITIVITY = {1: (0.60, 0.45), 2: (0.48, 0.35), 3: (VAD_ONSET, VAD_OFFSET), 4: (0.25, 0.18), 5: (0.15, 0.10)}
+QUIET_SPEECH_DB = -32      # loud parts of a clip below this = "very quiet" (normal recordings sit at -14..-22)
+NOISY_FLOOR_DB = -38       # background above this, with little gap to the speech = "noisy"
+CLIPPED_PCT = 0.05         # % of samples pinned at full scale = "clipping"
+WAVE_BUCKETS = 1000        # waveform resolution sent to the viewer
+_levels_lock = threading.Lock()
+
+
+def levels_path() -> Path:
+    return OUTPUT_DIR / "clip_levels.json"
+
+
+def load_levels() -> dict[str, dict]:
+    try:
+        return json.loads(levels_path().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def clip_levels(name: str) -> dict:
+    """Levels for one recording: saved ones, else defaults (rustle None = the global setting)."""
+    lv = {"gain_db": 0.0, "sensitivity": 3, "rustle": None, "gate_db": None, "declip": False, "reviewed": False}
+    lv.update(load_levels().get(name, {}))
+    return lv
+
+
+def save_levels(updates: dict[str, dict], reviewed: bool = True) -> dict[str, dict]:
+    with _levels_lock:
+        data = load_levels()
+        for name, lv in updates.items():
+            if not FILE_PATTERN.match(name):
+                continue
+            cur = clip_levels(name)
+            cur.update({
+                "gain_db": float(min(max(float(lv.get("gain_db", cur["gain_db"])), -24), 36)),
+                "sensitivity": int(min(max(int(lv.get("sensitivity", cur["sensitivity"])), 1), 5)),
+                "rustle": None if lv.get("rustle", cur["rustle"]) is None else float(min(max(float(lv["rustle"]), 0), 1)),
+                "gate_db": None if lv.get("gate_db", cur["gate_db"]) is None else float(min(max(float(lv["gate_db"]), -80), -15)),
+                "declip": bool(lv.get("declip", cur["declip"])),
+                "reviewed": reviewed or cur["reviewed"],
+            })
+            data[name] = cur
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = levels_path().with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        tmp.replace(levels_path())
+        return data
+
+
+def clip_chain(lv: dict) -> str:
+    """ffmpeg filters applied to one recording before the day is joined together."""
+    parts = []
+    if lv.get("declip"):
+        parts.append("adeclip")                          # rebuild clipped peaks (at the original rate)
+    parts += [f"aresample={SAMPLE_RATE}", "aformat=sample_fmts=fltp:channel_layouts=mono"]
+    if lv.get("gain_db"):
+        parts += [f"volume={lv['gain_db']:.1f}dB", "asoftclip=type=hard:threshold=1"]  # too much gain really clips
+    if lv.get("gate_db") is not None:
+        parts.append(f"agate=threshold={10 ** (lv['gate_db'] / 20):.6f}:range=0.01:attack=5:release=200")
+    return ",".join(parts)
+
+
+def decode_mono(path: Path, start: float = 0.0, seconds: float | None = None, chain: str | None = None,
+                post: str = "") -> np.ndarray:
+    """Decode (part of) a recording to 16 kHz mono float, optionally through a filter chain."""
+    cmd = ["ffmpeg", "-v", "error", "-ss", f"{start:.3f}"]
+    if seconds:
+        cmd += ["-t", f"{seconds:.3f}"]
+    cmd += ["-i", str(path)]
+    af = ",".join(p for p in (chain or f"aresample={SAMPLE_RATE},aformat=sample_fmts=fltp:channel_layouts=mono", post) if p)
+    cmd += ["-af", af, "-ar", str(SAMPLE_RATE), "-ac", "1", "-f", "f32le", "-"]
+    out = subprocess.run(cmd, capture_output=True)
+    if out.returncode != 0:
+        raise RuntimeError(f"Couldn't read {path.name}: {out.stderr.decode(errors='ignore').strip()[:200]}")
+    return np.frombuffer(out.stdout, np.float32)
+
+
+_analysis_cache: dict[tuple, dict] = {}
+
+
+def analyze_clip(path: Path) -> dict:
+    """Level statistics, problems and a waveform for one recording (cached per file version)."""
+    key = (str(path), path.stat().st_size, path.stat().st_mtime)
+    if key in _analysis_cache:
+        return _analysis_cache[key]
+    db = lambda v: 20 * np.log10(np.maximum(v, 1e-9))
+    x = decode_mono(path)
+    # Clipping is judged on the original samples: runs of 3+ pinned near full scale
+    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-f", "f32le", "-"], capture_output=True).stdout
+    r = np.abs(np.frombuffer(raw, np.float32)) >= 0.98
+    clipped_pct = float((np.convolve(r.astype(np.int8), np.ones(3, np.int8), mode="same") >= 3).mean() * 100) if len(r) else 0.0
+    del raw, r
+
+    frame = SAMPLE_RATE // 20                                    # 50 ms
+    n = len(x) // frame
+    rms = db(np.sqrt((x[:n * frame].reshape(-1, frame) ** 2).mean(1))) if n else np.array([-90.0])
+    speech, floor = (float(v) for v in np.percentile(rms, [95, 10]))
+    peak = float(db(np.abs(x).max())) if len(x) else -90.0
+
+    # Waveform: per bucket peak and RMS (linear, 0..1+)
+    b = max(1, len(x) // WAVE_BUCKETS)
+    nb = max(1, len(x) // b)
+    xb = np.abs(x[:nb * b]).reshape(nb, b) if len(x) >= b else np.abs(x).reshape(1, -1)
+    peaks = np.round(xb.max(1), 4).tolist()
+    rmsb = np.round(np.sqrt((xb ** 2).mean(1)), 4).tolist()
+
+    issues, fix = [], {}
+    if clipped_pct > CLIPPED_PCT:
+        issues.append({"code": "clipping", "label": "Clipping",
+                       "detail": f"{clipped_pct:.2f}% of the audio is cut off at full volume. Repair clipping can rebuild the peaks."})
+        fix.update(declip=True)
+    if speech < QUIET_SPEECH_DB:
+        gain = round(min(-20 - speech, -peak - 1, 30))
+        issues.append({"code": "quiet", "label": "Very quiet",
+                       "detail": f"Speech peaks around {speech:.0f} dBFS (normal is about -15 to -22). Boosting by {gain:+d} dB brings it up."})
+        fix.update(gain_db=float(max(gain, 0)), sensitivity=4)
+    if floor > NOISY_FLOOR_DB and speech - floor < 15:
+        issues.append({"code": "noisy", "label": "Noisy",
+                       "detail": f"Background noise sits at {floor:.0f} dBFS, close to the speech ({speech:.0f} dBFS). A noise gate can quiet the gaps."})
+        fix.update(gate_db=float(round(floor + 3)))
+    result = {"name": path.name, "duration": round(len(x) / SAMPLE_RATE, 2), "peak_db": round(peak, 1),
+              "speech_db": round(speech, 1), "floor_db": round(floor, 1), "clipped_pct": round(clipped_pct, 3),
+              "issues": issues, "suggested": fix, "peaks": peaks, "rms": rmsb}
+    _analysis_cache[key] = result
+    return result
+
+
+def flagged_clips(files: list[Path]) -> list[str]:
+    """Recordings with problems that the user hasn't looked at yet."""
+    return [f.name for f in files if not clip_levels(f.name)["reviewed"] and analyze_clip(f)["issues"]]
+
+
+def preview_wav(path: Path, start: float, lv: dict, seconds: float = 10.0) -> bytes:
+    """A short WAV of the recording exactly as transcription will hear it."""
+    import io
+    from scipy.io import wavfile
+    y = decode_mono(path, max(0.0, start), seconds, clip_chain(lv), "highpass=f=80,speechnorm=e=4:r=0.0001:l=1")
+    strength = setting("rustle_strength") if lv.get("rustle") is None else lv["rustle"]
+    if strength > 0 and len(y):
+        y, _ = suppress_rustle(y, SAMPLE_RATE, strength)
+    buf = io.BytesIO()
+    wavfile.write(buf, SAMPLE_RATE, (np.clip(y, -1, 1) * 32767).astype(np.int16))
+    return buf.getvalue()
+
+
 # --- SPEAKER PROFILE MATCHER ---
 def unit(v) -> np.ndarray:
     v = np.asarray(v, dtype=np.float32).flatten()
@@ -303,8 +643,9 @@ def unit(v) -> np.ndarray:
 class VoiceMemory:
     """Remembers people across days. Each person has several voiceprints (one per day heard)."""
 
-    def __init__(self, conn):
-        self.conn = conn
+    def __init__(self):
+        self.conn = None   # opened per assign() call: SQLite connections can't cross threads,
+                           # and the background worker thread changes between jobs
 
     def people(self) -> dict[int, tuple[str, np.ndarray]]:
         rows = self.conn.execute(
@@ -339,6 +680,14 @@ class VoiceMemory:
     def assign(self, day: str, voices: dict[str, tuple[np.ndarray, float]], prior: dict[str, str]) -> dict[str, str]:
         """Name today's voices. `voices` maps label -> (embedding, seconds spoken); `prior` maps
         label -> name kept from an earlier transcript of this same day (so renames survive)."""
+        self.conn = init_db()
+        try:
+            return self._assign(day, voices, prior)
+        finally:
+            self.conn.close()
+            self.conn = None
+
+    def _assign(self, day: str, voices: dict[str, tuple[np.ndarray, float]], prior: dict[str, str]) -> dict[str, str]:
         cur = self.conn
         # Re-transcribing a day replaces its voiceprints rather than counting it twice
         cur.execute("DELETE FROM voiceprints WHERE day = ?", (day,))
@@ -552,9 +901,10 @@ class Engine:
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         compute_type = "float16" if self.device == "cuda" else "int8"
         log(f"Loading models on {self.device.upper()} (first run downloads several GB)...")
-        self.memory = VoiceMemory(init_db())
+        init_db().close()   # create / migrate the voice DB up front
+        self.memory = VoiceMemory()
         self.whisper_model = whisperx.load_model(
-            "large-v3", self.device, compute_type=compute_type, language=LANGUAGE,
+            "large-v3", self.device, compute_type=compute_type,
             vad_options={"vad_onset": VAD_ONSET, "vad_offset": VAD_OFFSET})
         self.diarize_model = DiarizationPipeline(token=HF_TOKEN, device=self.device)
 
@@ -593,8 +943,28 @@ class Engine:
             finish("merge")
 
             report = step("transcribe")
-            result = self.whisper_model.transcribe(audio, batch_size=16, language=LANGUAGE, progress_callback=report)
-            language = result["language"]
+            # Each recording is transcribed with its own speech sensitivity, then put back on the day timeline
+            sources = describe_sources(files)
+            language = setting("language") or None
+            self.whisper_model.tokenizer = None   # whisperx would otherwise reuse the previous day's language
+            segments, total_secs, done_secs = [], sum(s["duration"] for s in sources) or 1, 0.0
+            for src in sources:
+                chunk = audio[int(src["start"] * SAMPLE_RATE):int((src["start"] + src["duration"]) * SAMPLE_RATE)]
+                if len(chunk) >= SAMPLE_RATE:
+                    onset, offset = SENSITIVITY[clip_levels(src["name"])["sensitivity"]]
+                    self.whisper_model._vad_params = {**self.whisper_model._vad_params,
+                                                      "vad_onset": onset, "vad_offset": offset}
+                    part = self.whisper_model.transcribe(
+                        chunk, batch_size=16, language=language,
+                        progress_callback=lambda p, base=done_secs, d=src["duration"]: report((base + d * p / 100) / total_secs * 100))
+                    language = language or part["language"]   # the first clip decides for the rest of the day
+                    for seg in part["segments"]:
+                        seg["start"] += src["start"]
+                        seg["end"] += src["start"]
+                        segments.append(seg)
+                done_secs += src["duration"]
+            language = language or "en"
+            result = {"segments": segments, "language": language}
             finish("transcribe")
 
             report = step("align")
@@ -883,11 +1253,23 @@ class Processor:
         self.engine: Engine | None = None
         self.thread: threading.Thread | None = None
         self.failed_state: dict[str, tuple] = {}   # date -> recordings snapshot when it failed
+        self.blocked: dict | None = None            # {"date", "clips"}: waiting for the user to check levels
+        self.unblock = threading.Event()
+
+    def resolve(self, action: str):
+        """The user dealt with a flagged clip: 'continue' (levels saved / accepted) or 'skip' the day."""
+        with self.lock:
+            if not self.blocked:
+                return
+            if action == "skip" and self.blocked["date"] in self.queue:
+                self.queue.remove(self.blocked["date"])
+            self.blocked = None
+        self.unblock.set()
 
     def summary(self) -> dict:
         with self.lock:
             cur = self.current and {k: self.current[k] for k in ("date", "progress", "label")}
-            return {"current": cur, "queued": list(self.queue)}
+            return {"current": cur, "queued": list(self.queue), "blocked": self.blocked}
 
     def watch(self, interval: float = 30.0, settle: float = 60.0, force: bool = False):
         """Keep an eye on the recordings folder and queue any day that is new or incomplete.
@@ -899,6 +1281,9 @@ class Processor:
             first = True
             while True:
                 try:
+                    if not setting("auto_transcribe"):   # off until the user turns it on in setup/settings
+                        time.sleep(5)
+                        continue
                     now = time.time()
                     for date, files in sorted(get_daily_batches(INPUT_DIR).items()):
                         if any(now - f.stat().st_mtime < settle for f in files):
@@ -936,6 +1321,8 @@ class Processor:
 
     def state_for(self, date: str) -> dict | None:
         with self.lock:
+            if self.blocked and self.blocked["date"] == date:
+                return {"status": "blocked", "clips": self.blocked["clips"]}
             if self.current and self.current["date"] == date:
                 return {"status": "processing", "progress": round(self.current["progress"], 3),
                         "label": self.current["label"]}
@@ -970,6 +1357,20 @@ class Processor:
                 if not files:
                     raise RuntimeError(f"No recordings for {date} in {INPUT_DIR}")
                 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+                # A recording that's very quiet / clipped / noisy and hasn't been looked at stops the whole
+                # queue until the user sets its levels in the viewer (or accepts it as is, or skips the day)
+                self._set(label="Checking audio levels")
+                flagged = flagged_clips(files)
+                if flagged:
+                    log(f"[viewer] {date}: waiting for levels on {', '.join(flagged)}")
+                    with self.lock:
+                        self.blocked = {"date": date, "clips": flagged}
+                        self.queue.insert(0, date)
+                        self.hints[date] = hint
+                        self.current = None
+                    self.unblock.clear()
+                    self.unblock.wait()
+                    continue
                 if self.engine is None:
                     self._set(label="Loading models (first time can take several minutes)")
                     self.engine = Engine()
@@ -992,8 +1393,17 @@ def create_app(auto_process: bool = False, force: bool = False):
 
     app = FastAPI(title="Recorder Playback", docs_url=None, redoc_url=None)
     processor = Processor()
+
+    def after_sync(days: list[str]):
+        # Freshly copied days follow the auto-transcribe setting (queued now, not on the next watcher pass)
+        if setting("auto_transcribe"):
+            for d in days:
+                processor.enqueue(d)
+
+    syncer = Syncer(on_done=after_sync)
     if auto_process:
-        processor.watch(force=force)
+        processor.watch(force=force)   # only queues work once auto-transcribe is switched on
+    checks_cache: dict = {}
 
     class RenameBody(BaseModel):
         old: str
@@ -1007,6 +1417,111 @@ def create_app(auto_process: bool = False, force: bool = False):
     class LinesBody(BaseModel):
         action: str               # trash | restore | keep
         items: list[dict]         # [{start, text}]
+
+    class SettingsBody(BaseModel):
+        setup_done: bool | None = None
+        auto_transcribe: bool | None = None
+        language: str | None = None
+        rustle_strength: float | None = None
+
+    class SyncBody(BaseModel):
+        root: str
+
+    class LevelsBody(BaseModel):
+        levels: dict[str, dict]       # recording name -> {gain_db, sensitivity, rustle, gate_db, declip}
+        reviewed: bool = True
+
+    class BlockedBody(BaseModel):
+        action: str                   # continue | skip
+
+    def recording_path(name: str) -> Path:
+        if not FILE_PATTERN.match(name):
+            raise HTTPException(404, "Not a recording")
+        return safe_file(INPUT_DIR, name, RECORDING_SUFFIXES)
+
+    @app.get("/api/days/{date}/clips")
+    def day_clips(date: str):
+        """Every recording of the day with its levels, problems and waveform, for the levels dialog."""
+        check_date(date)
+        files = get_daily_batches(INPUT_DIR).get(date)
+        if not files:
+            raise HTTPException(404, f"No recordings for {date} in {INPUT_DIR}")
+        clips = []
+        for f in files:
+            try:
+                info = analyze_clip(f)
+            except RuntimeError as e:
+                info = {"name": f.name, "duration": probe_duration(f), "issues": [{"code": "unreadable", "label": "Unreadable", "detail": str(e)}],
+                        "suggested": {}, "peaks": [], "rms": []}
+            clips.append({**info, "recorded_at": recorded_at(f.name), "levels": clip_levels(f.name)})
+        return {"date": date, "clips": clips, "default_rustle": setting("rustle_strength"),
+                "sensitivity_labels": {1: "Lowest", 2: "Low", 3: "Normal", 4: "High", 5: "Highest"}}
+
+    @app.post("/api/levels")
+    def put_levels(body: LevelsBody):
+        save_levels(body.levels, body.reviewed)
+        return {"saved": len(body.levels)}
+
+    @app.post("/api/blocked")
+    def resolve_blocked(body: BlockedBody):
+        if body.action not in ("continue", "skip"):
+            raise HTTPException(400, "Unknown action")
+        processor.resolve(body.action)
+        return processor.summary()
+
+    @app.get("/api/clips/{name}/preview")
+    def clip_preview(name: str, start: float = 0.0, gain_db: float = 0.0, gate_db: float | None = None,
+                     rustle: float | None = None, declip: bool = False):
+        """~10 s of the recording processed exactly as transcription will hear it."""
+        from fastapi.responses import Response
+        path = recording_path(name)
+        lv = {"gain_db": gain_db, "gate_db": gate_db, "rustle": rustle, "declip": declip}
+        try:
+            return Response(preview_wav(path, start, lv), media_type="audio/wav", headers={"Cache-Control": "no-store"})
+        except RuntimeError as e:
+            raise HTTPException(500, str(e))
+
+    def system_checks(fresh: bool = False) -> dict:
+        """What setup needs: HF access, ffmpeg, GPU, recordings folder. Cached (the HF check is a web call)."""
+        if fresh or time.time() - checks_cache.get("at", 0) > 600:
+            problems = setup_problems()
+            hf = [p for p in problems if "HF_TOKEN" in p] or (model_access_problems() if HF_TOKEN else [])
+            gpu = None
+            if shutil.which("nvidia-smi"):
+                out = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                                     capture_output=True, text=True)
+                gpu = out.stdout.strip().splitlines()[0] if out.returncode == 0 and out.stdout.strip() else None
+            checks_cache.update(at=time.time(), checks={
+                "hf": {"ok": not hf, "detail": " ".join(hf) or "Hugging Face models are accessible."},
+                "ffmpeg": {"ok": shutil.which("ffmpeg") is not None,
+                           "detail": "ffmpeg found." if shutil.which("ffmpeg") else "ffmpeg is not installed / not on PATH."},
+                "gpu": {"ok": gpu is not None,
+                        "detail": gpu or "No NVIDIA GPU found: transcription will run on the CPU (much slower)."},
+                "record_dir": {"ok": INPUT_DIR.is_dir(), "detail": str(INPUT_DIR)},
+            })
+        return checks_cache["checks"]
+
+    @app.get("/api/settings")
+    def get_settings(fresh: bool = False):
+        return {"settings": load_settings(), "checks": system_checks(fresh), "sync_mode": SYNC_MODE}
+
+    @app.post("/api/settings")
+    def put_settings(body: SettingsBody):
+        saved = save_settings(body.model_dump(exclude_none=True))
+        log(f"Settings saved: auto-transcribe {'on' if saved['auto_transcribe'] else 'off'}, "
+            f"language {saved['language'] or 'auto'}, rustle {saved['rustle_strength']}")
+        return {"settings": saved}
+
+    @app.get("/api/sync")
+    def sync_status():
+        return {"recorders": find_recorders(), "job": syncer.status(), "mode": SYNC_MODE}
+
+    @app.post("/api/sync")
+    def sync_start(body: SyncBody):
+        try:
+            return syncer.start(body.root)
+        except FileNotFoundError as e:
+            raise HTTPException(404, str(e))
 
     def check_date(date: str):
         if not DATE_RE.match(date):
@@ -1095,7 +1610,8 @@ def create_app(auto_process: bool = False, force: bool = False):
 
     @app.get("/recordings/{name}")
     def recording(name: str):
-        return FileResponse(safe_file(INPUT_DIR, name, {".mp3"}), media_type="audio/mpeg")
+        path = safe_file(INPUT_DIR, name, RECORDING_SUFFIXES)
+        return FileResponse(path, media_type="audio/wav" if path.suffix.lower() == ".wav" else "audio/mpeg")
 
     @app.post("/api/days/{date}/process")
     def process(date: str, body: ProcessBody | None = None):
@@ -1143,7 +1659,7 @@ def serve(host: str, port: int, open_browser: bool = True, auto_process: bool = 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     url = f"http://{'localhost' if host in ('127.0.0.1', '0.0.0.0') else host}:{port}"
     log(f"\nViewer running at {url}  (Ctrl+C to stop)")
-    if host == "0.0.0.0" and not os.getenv("IN_DOCKER"):
+    if host == "0.0.0.0":
         log("  Listening on all network interfaces: anyone on your network can open your recordings.")
     if auto_process:
         log(f"  Watching {INPUT_DIR}: new or incomplete days are transcribed in the background.")
