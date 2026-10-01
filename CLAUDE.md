@@ -103,6 +103,14 @@ A 2.5-hour day takes about 4 minutes to diarize on the RTX 5060 Ti.
 - The watcher queues nothing until `auto_transcribe` is true. That is the "nothing happens before setup" guarantee.
 - Env `LANGUAGE` and `RUSTLE_STRENGTH` only seed the defaults.
 
+**Per-recording levels:** stored in `OUTPUT_DIR/clip_levels.json`, keyed by recording filename, as `{gain_db, sensitivity 1–5, rustle (null = global), gate_db (null = off), declip, reviewed}`.
+- **Merge step:** `clip_chain()` builds each input's ffmpeg chain: `adeclip` → resample/mono → `volume` and a hard `asoftclip` (too much gain really clips) → `agate`. The merge manifest includes the levels, so changing them rebuilds the WAV. `derustle_wav(path, regions)` applies each clip's own rustle strength.
+- **Transcribe step:** each clip is transcribed separately with `SENSITIVITY[level]` written into `whisper_model._vad_params`, and timestamps are shifted onto the day timeline. `whisper_model.tokenizer` is reset per day; otherwise whisperx silently reuses the first day's language.
+- **`analyze_clip()`:** measures speech level (95th-percentile 50 ms RMS), noise floor (10th percentile), peak and clipping, where clipping means runs of 3 or more samples at ≥0.98 of full scale in the *original* file. It returns `issues`, a `suggested` fix and a 1000-bucket waveform (peaks/RMS). Results are cached per file version.
+- **Thresholds:** `QUIET_SPEECH_DB = -32`, `NOISY_FLOOR_DB = -38`, `CLIPPED_PCT = 0.05`. They were calibrated on the user's real recordings: speech −14 to −22 dBFS, floor −44 to −69 dBFS, no clipping. On a −25 dB test copy, the suggested +19 dB with High sensitivity transcribed *more* than the untouched clip did at Normal.
+- **Blocking:** in `Processor._run`, a day with unreviewed `flagged_clips()` sets `processor.blocked` and the thread waits on `processor.unblock`, which `POST /api/blocked {continue|skip}` sets. The day is re-queued at the front, so the whole queue stops (the user's choice). `jobs.blocked` makes the viewer open the dialog in blocked mode on any page. That mode can't be dismissed with Esc.
+- **Routes:** `GET /api/days/{date}/clips` (analysis plus levels per clip), `POST /api/levels {levels, reviewed}`, `GET /api/clips/{name}/preview?start&gain_db&gate_db&rustle&declip` (10 s WAV through the real chain, speechnorm and rustle).
+
 **Recorder sync:**
 - `find_recorders()` checks every removable or fixed drive (`GetLogicalDrives`/`GetDriveTypeW` on Windows; `/media`, `/mnt` and similar elsewhere), plus `SYNC_SOURCES`. A drive counts as a recorder when its root has a `RECORD` folder and `SETTINGS.TXT`, matched case-insensitively. The local `RECORD_DIR` is excluded.
 - `Syncer` copies each file to `<name>.part` in 4 MB chunks with progress, runs `copystat` (so the watcher doesn't wait out its 60 s settle time), checks the size, then renames. With `SYNC_MODE=move` it deletes the source only after that check.

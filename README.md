@@ -61,6 +61,20 @@ Files must be named like the recorder names them: `V2026-08-20-06-18-54.MP3` or 
 3. **Recording activity.** A GitHub-style grid of the last year: one square per day, darker for more recordings, outlined in amber when not transcribed yet. Click a square to open that day.
 4. **Transcription.** Shows what's running, with **Transcribe** buttons for days that are waiting.
 
+### Recording levels
+
+Every **Transcribe** or **Re-transcribe** opens a dialog with all of that day's recordings. Each one shows a waveform: grey is the original, blue is how it will sound with your settings, red marks clipping, amber marks clipping being repaired, and dimmed parts are silenced by the noise gate. Click a waveform to hear 10 seconds from that point exactly as transcription will hear it.
+
+Each recording has its own controls:
+
+- **Volume:** boost or lower it.
+- **Speech sensitivity:** how quiet a voice can be and still get transcribed.
+- **Noise gate:** silence everything below the dashed line.
+- **Rustle cleanup:** for this recording only.
+- **Repair clipping:** shown when a recording is clipped.
+
+**Unusual recordings pause everything.** If a recording is very quiet, clipped or noisy, and you haven't looked at it yet, the whole transcription queue stops. The dialog pops up on whatever page you're on, showing that recording with a suggested fix. Choose **Continue with these levels**, **Use as is** or **Skip this day**. This happens with auto-transcribe and **Transcribe all** too.
+
 - **Library (left):** every day found in the recordings folder.
   - Days being transcribed show a live percentage, and a progress pill in the header follows the current job from any page.
   - Days that are new or incomplete (including recordings that are still being copied, which are picked up once the files stop changing) are queued automatically.

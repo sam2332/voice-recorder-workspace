@@ -351,6 +351,31 @@
   dialog h3 { margin: 0 0 14px; }
   dialog .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 18px; }
   dialog input[type=text] { width: 100%; padding: 9px 12px; border-radius: 10px; border: 1px solid var(--border); background: var(--bg); }
+  dialog.wide { width: min(940px, calc(100% - 24px)); max-height: calc(100vh - 32px); overflow: hidden; }
+  /* Only the recordings list scrolls; the title, speaker count and buttons stay in view */
+  dialog.wide > form { display: flex; flex-direction: column; max-height: calc(100vh - 82px); }
+  dialog.wide .clips { flex: 1 1 auto; min-height: 140px; max-height: none; }
+  dialog.blocked .count-section { display: none; }
+  dialog.blocked { border-color: color-mix(in srgb, var(--warn) 60%, transparent); }
+  h4.sect { margin: 18px 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+  .clips { display: grid; gap: 12px; max-height: 58vh; overflow-y: auto; padding-right: 4px; }
+  .clip { border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; background: var(--bg); }
+  .clip.flagged { border-color: color-mix(in srgb, var(--warn) 55%, transparent); }
+  .clip-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .clip-head .btn { margin-left: auto; }
+  .clip-issue { font-size: 13px; color: var(--muted); margin-top: 4px; }
+  canvas.wave { display: block; width: 100%; height: 72px; margin: 10px 0 8px; cursor: pointer; border-radius: 6px; background: var(--surface-2); }
+  .clip-ctrls { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px 18px; align-items: end; }
+  .ctl { display: grid; gap: 4px; font-size: 13px; }
+  .ctl-top { display: flex; justify-content: space-between; color: var(--muted); }
+  .ctl-val { color: var(--text); font-variant-numeric: tabular-nums; font-weight: 600; }
+  .ctl input[type=range] { width: 100%; accent-color: var(--accent); }
+  .ctl select { padding: 5px 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface); }
+  .wave-key { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12px; color: var(--muted); margin: -2px 0 10px; }
+  .wave-key i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+  .k-orig { background: var(--border); } .k-after { background: var(--accent); } .k-clip { background: var(--danger); }
+  .k-fix { background: var(--warn); } .k-gate { background: var(--muted); opacity: .4; }
+  .ctl.check { display: flex; align-items: center; gap: 8px; color: var(--text); cursor: pointer; }
   .choice { display: grid; gap: 10px; }
   .choice label { display: flex; align-items: center; gap: 8px; cursor: pointer; }
   .choice input[type=number] { width: 56px; padding: 4px 6px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); }
@@ -572,20 +597,23 @@
   </form>
 </dialog>
 
-<dialog id="process-dlg">
+<dialog id="process-dlg" class="wide">
   <form method="dialog">
     <h3 id="process-title">Transcribe this day</h3>
-    <p class="muted" style="margin:0 0 14px">How many people were talking? A count makes speaker detection much more reliable.</p>
-    <div class="choice">
-      <label><input type="radio" name="count-mode" value="auto" checked> Work it out automatically</label>
-      <label><input type="radio" name="count-mode" value="exact"> Exactly <input type="number" id="count-exact" min="1" max="30" value="2"> people</label>
-      <label><input type="radio" name="count-mode" value="min"> At least <input type="number" id="count-min" min="1" max="30" value="2"> people</label>
+    <p class="muted" id="process-lead" style="margin:0 0 14px"></p>
+    <div class="count-section">
+      <h4 class="sect">How many people were talking?</h4>
+      <div class="choice">
+        <label><input type="radio" name="count-mode" value="auto" checked> Work it out automatically</label>
+        <label><input type="radio" name="count-mode" value="exact"> Exactly <input type="number" id="count-exact" min="1" max="30" value="2"> people</label>
+        <label><input type="radio" name="count-mode" value="min"> At least <input type="number" id="count-min" min="1" max="30" value="2"> people</label>
+      </div>
     </div>
+    <h4 class="sect">Recordings <span class="muted" id="clips-summary" style="font-weight:400"></span></h4>
+    <div class="wave-key"><span><i class="k-orig"></i>original</span><span><i class="k-after"></i>with your settings</span><span><i class="k-clip"></i>clipping</span><span><i class="k-fix"></i>repaired</span><span><i class="k-gate"></i>silenced by gate</span><span>Click a waveform to listen</span></div>
+    <div class="clips" id="clips-list"></div>
     <div class="note" id="process-note"></div>
-    <div class="row">
-      <button class="btn" value="cancel" formnovalidate>Cancel</button>
-      <button class="btn primary" value="ok" id="process-go">Start</button>
-    </div>
+    <div class="row" id="process-actions"></div>
   </form>
 </dialog>
 
@@ -755,6 +783,7 @@
       if (job?.status === 'processing') row.append(el('span', 'chip processing', `${Math.round((job.progress || 0) * 100)}%`));
       else if (job?.status === 'queued') row.append(el('span', 'chip queued', 'Queued'));
       else if (job?.status === 'failed') row.append(el('span', 'chip failed', 'Failed'));
+      else if (job?.status === 'blocked') row.append(el('span', 'chip pending', 'Needs levels'));
       else if (d.status === 'pending') row.append(el('span', 'chip pending', 'Not transcribed'));
       else if (d.new_recordings) row.append(el('span', 'chip new', `+${d.new_recordings} new`));
       card.append(row);
@@ -791,6 +820,14 @@
   function renderJobPill() {
     const pill = $('job-pill'), j = state.jobs || {};
     const cur = j.current, waiting = (j.queued || []).length;
+    if (j.blocked) {
+      pill.classList.remove('hidden'); pill.classList.add('indeterminate');
+      $('job-text').textContent = `Paused · ${shortDate(j.blocked.date)} needs your levels`;
+      pill.title = 'A recording looks unusual: click to check it';
+      pill.dataset.date = ''; pill.onclick = () => showBlocked(j.blocked);
+      return;
+    }
+    pill.onclick = () => { const d = pill.dataset.date; if (d) { go(d); closeDrawers(); } };
     pill.classList.toggle('hidden', !cur && !waiting);
     if (!cur && !waiting) return;
     const pct = cur?.progress || 0;
@@ -831,6 +868,10 @@
     state.recordDir = r.record_dir;
     state.jobs = r.jobs;
     renderJobPill();
+    // A flagged recording has paused the queue: ask about it now, whatever page is open
+    const b = r.jobs?.blocked;
+    if (b && state.blockedFor !== b.date + '|' + b.clips.join(',')) showBlocked(b);
+    if (!b && state.blockedFor && $('process-dlg').classList.contains('blocked')) { state.blockedFor = null; $('process-dlg').close(); }
 
     if ($('app').classList.contains('hidden')) { showApp(); schedulePoll(r.busy ? 2500 : 5000); return; }
 
@@ -1123,7 +1164,10 @@
     const jobs = state.jobs || {};
     const failed = lib.filter(d => d.job?.status === 'failed');
     const tc = card('wave', 'Transcription');
-    if (jobs.current) {
+    if (jobs.blocked) {
+      tc.append(el('p', null, `Paused: a recording on ${shortDate(jobs.blocked.date)} needs your levels before anything else is transcribed.`));
+      const a = el('div', 'actions'); a.append(btn('Check it now', 'primary', () => showBlocked(jobs.blocked))); tc.append(a);
+    } else if (jobs.current) {
       const cur = jobs.current;
       tc.append(el('p', null, `Working on ${longDate(cur.date)}` + ((jobs.queued || []).length ? ` · ${(jobs.queued || []).length} more waiting` : '')));
       tc.append(progressBar(cur.progress, cur.label + '…', cur.progress ? `${Math.round(cur.progress * 100)}%` : ''));
@@ -1135,7 +1179,9 @@
     }
     if (failed.length) tc.append(el('div', 'error-box', `${shortDate(failed[0].date)} failed: ${failed[0].job.error}`));
     const ta = el('div', 'actions');
-    if (pending.length) ta.append(btn(pending.length > 1 ? `Transcribe all ${pending.length} days` : `Transcribe ${shortDate(pending[0].date)}`, jobs.current ? '' : 'primary', () => transcribe(pending.map(d => d.date).reverse())));
+    // One day: open the levels dialog. Several: queue them all (unusual recordings still pause for review)
+    if (pending.length === 1) ta.append(btn(`Transcribe ${shortDate(pending[0].date)}…`, jobs.current ? '' : 'primary', () => askTranscribe('Transcribe', pending[0].date)));
+    else if (pending.length) ta.append(btn(`Transcribe all ${pending.length} days`, jobs.current ? '' : 'primary', () => transcribe(pending.map(d => d.date).reverse())));
     tc.append(ta);
     tc.append(el('p', 'note', s.auto_transcribe ? 'Auto-transcribe is on: new recordings start by themselves.' : 'Auto-transcribe is off: new days wait for you. Change it in Settings below.'));
     frag.append(tc);
@@ -1323,7 +1369,7 @@
       card.append(el('p', 'note', 'Run python app.py to transcribe it.'));
     } else if (status === 'pending' || status === 'failed') {
       const b = el('button', 'btn primary', status === 'failed' ? 'Try again' : 'Transcribe this day');
-      b.onclick = () => askTranscribe(status === 'failed' ? 'Try again' : 'Transcribe this day');
+      b.onclick = () => askTranscribe(status === 'failed' ? 'Try again' : 'Transcribe');
       actions.append(b);
     } else if (status === 'queued') {
       const b = el('button', 'btn', 'Remove from queue');
@@ -1818,37 +1864,234 @@
   $('lib-home').onclick = () => go('');
   $('brand').onclick = () => state.server && go('');
   $('brand').onkeydown = e => { if (e.key === 'Enter') $('brand').onclick(); };
-  $('job-pill').onclick = () => { const d = $('job-pill').dataset.date; if (d) { go(d); closeDrawers(); } };
   $('process-all').onclick = () => transcribe(state.library.filter(d => d.status === 'pending' && !d.job).map(d => d.date).reverse());
-  $('banner-btn').onclick = () => askTranscribe('Re-transcribe this day');
-  $('redo-btn').onclick = () => askTranscribe('Re-transcribe this day');
+  $('banner-btn').onclick = () => askTranscribe('Re-transcribe');
+  $('redo-btn').onclick = () => askTranscribe('Re-transcribe');
   $('process-dlg').addEventListener('input', e => {
     if (e.target.type === 'number') e.target.closest('label').querySelector('input[type=radio]').checked = true;
   });
 
-  // Ask how many people were talking, then queue the day
-  function askTranscribe(title) {
-    const hint = state.data?.speaker_hint || {};
-    const n = Object.keys(state.colors).filter(s => s !== 'Unknown').length;
-    $('process-title').textContent = title;
+  // ---------- Transcribe dialog: speaker count + per-recording levels with waveforms ----------
+  const SENS_LABELS = { 1: 'Lowest', 2: 'Low', 3: 'Normal', 4: 'High', 5: 'Highest' };
+  const RUSTLE_OPTS = [['', 'Default'], ['1', 'Strong'], ['0.5', 'Gentle'], ['0', 'Off']];
+  const GATE_OFF = -80;  // slider at the far left = no gate
+  const dbToLin = d => Math.pow(10, d / 20);
+  const preview = new Audio();
+  let previewing = null;   // {clip, start, canvas}
+
+  function stopPreview() {
+    preview.pause();
+    if (previewing) { const p = previewing; previewing = null; drawWave(p.clip); }
+  }
+  preview.addEventListener('ended', stopPreview);
+
+  function playPreview(clip, t) {
+    if (previewing && previewing.clip === clip && Math.abs(previewing.start - t) < 0.5) { stopPreview(); return; }
+    stopPreview();
+    audio.pause();
+    const lv = clip.edit;
+    const q = new URLSearchParams({ start: t.toFixed(2), gain_db: lv.gain_db, declip: lv.declip });
+    if (lv.gate_db !== null) q.set('gate_db', lv.gate_db);
+    if (lv.rustle !== null) q.set('rustle', lv.rustle);
+    preview.src = `/api/clips/${encodeURIComponent(clip.name)}/preview?${q}`;
+    previewing = { clip, start: t };
+    preview.play().catch(e => toast(`Couldn't play the preview: ${e.message}`));
+    const tick = () => { if (previewing?.clip === clip) { drawWave(clip); requestAnimationFrame(tick); } };
+    requestAnimationFrame(tick);
+  }
+
+  // Waveform: grey = the original, colour = after gain; red = clipping; dim = silenced by the gate
+  function drawWave(clip) {
+    const cv = clip.canvas; if (!cv || !clip.peaks?.length) return;
+    const dpr = window.devicePixelRatio || 1;
+    const W = cv.clientWidth, H = cv.clientHeight;
+    if (cv.width !== Math.round(W * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }
+    const g = cv.getContext('2d');
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.clearRect(0, 0, W, H);
+    const css = getComputedStyle(document.documentElement);
+    const col = { accent: css.getPropertyValue('--accent'), danger: css.getPropertyValue('--danger'),
+      muted: css.getPropertyValue('--muted'), border: css.getPropertyValue('--border'), warn: css.getPropertyValue('--warn') };
+    const mid = H / 2, half = H / 2 - 2;
+    const gain = dbToLin(clip.edit.gain_db);
+    const gate = clip.edit.gate_db === null ? 0 : dbToLin(clip.edit.gate_db);
+    const n = clip.peaks.length;
+    for (let x = 0; x < W; x++) {
+      const i0 = Math.floor(x / W * n), i1 = Math.max(i0 + 1, Math.floor((x + 1) / W * n));
+      let p = 0, r = 0, rawClip = false;
+      for (let i = i0; i < i1 && i < n; i++) { p = Math.max(p, clip.peaks[i]); r = Math.max(r, clip.rms[i]); if (clip.peaks[i] >= 0.98) rawClip = true; }
+      // original, faint and wide
+      g.fillStyle = col.border; g.fillRect(x, mid - Math.min(p, 1) * half, 1, Math.max(1, Math.min(p, 1) * half * 2));
+      const pg = p * gain, rg = r * gain;
+      // red = clipped (in the recording, or by the extra volume); amber = clipped but being repaired
+      const clipped = (gain > 1 && pg >= 1) || (rawClip && !clip.edit.declip);
+      const repaired = rawClip && clip.edit.declip && !clipped;
+      const gated = gate && rg < gate;
+      g.fillStyle = clipped ? col.danger : repaired ? col.warn : gated ? col.muted : col.accent;
+      g.globalAlpha = gated ? 0.35 : 0.9;
+      const h = Math.min(pg, 1) * half;
+      g.fillRect(x, mid - h, 1, Math.max(1, h * 2));
+      g.globalAlpha = 1;
+    }
+    g.strokeStyle = col.border; g.setLineDash([]); g.beginPath();
+    g.moveTo(0, 2.5); g.lineTo(W, 2.5); g.moveTo(0, H - 2.5); g.lineTo(W, H - 2.5); g.stroke();   // full scale
+    if (gate) {
+      g.strokeStyle = col.muted; g.setLineDash([4, 4]); g.beginPath();
+      const y = Math.min(gate, 1) * half;
+      g.moveTo(0, mid - y); g.lineTo(W, mid - y); g.moveTo(0, mid + y); g.lineTo(W, mid + y); g.stroke();
+      g.setLineDash([]);
+    }
+    if (previewing?.clip === clip) {
+      const t = previewing.start + (preview.currentTime || 0);
+      const xp = t / clip.duration * W;
+      g.fillStyle = col.danger; g.fillRect(xp, 0, 2, H);
+    }
+  }
+
+  function clipRow(clip, defaultRustle) {
+    const lv = clip.levels || {};
+    clip.edit = { gain_db: lv.gain_db ?? 0, sensitivity: lv.sensitivity ?? 3, rustle: lv.rustle ?? null,
+      gate_db: lv.gate_db ?? null, declip: !!lv.declip };
+    const row = el('div', 'clip' + (clip.issues?.length ? ' flagged' : ''));
+    const head = el('div', 'clip-head');
+    head.append(el('b', null, clock(clip.recorded_at) || clip.name), el('span', 'muted', fmt(clip.duration)));
+    (clip.issues || []).forEach(i => head.append(el('span', 'chip ' + (i.code === 'clipping' ? 'failed' : 'pending'), i.label)));
+    const fix = el('button', 'btn small', 'Apply suggested fix');
+    fix.type = 'button';
+    if (clip.suggested && Object.keys(clip.suggested).length) head.append(fix);
+    row.append(head);
+    (clip.issues || []).forEach(i => row.append(el('div', 'clip-issue', i.detail)));
+
+    const cv = el('canvas', 'wave');
+    cv.title = 'Click to hear 10 seconds from here with these settings (click again to stop)';
+    clip.canvas = cv;
+    cv.onclick = e => { const r = cv.getBoundingClientRect(); playPreview(clip, (e.clientX - r.left) / r.width * clip.duration); };
+    row.append(cv);
+
+    const ctrls = el('div', 'clip-ctrls');
+    const slider = (label, min, max, step, value, fmtv, onchange, tip) => {
+      const w = el('label', 'ctl'); w.title = tip;
+      const top = el('span', 'ctl-top'); const val = el('span', 'ctl-val');
+      top.append(el('span', null, label), val);
+      const inp = el('input'); inp.type = 'range'; inp.min = min; inp.max = max; inp.step = step; inp.value = value;
+      const upd = () => { val.textContent = fmtv(+inp.value); onchange(+inp.value); drawWave(clip); };
+      inp.oninput = upd; val.textContent = fmtv(+inp.value);
+      w.append(top, inp);
+      return { w, inp, upd };
+    };
+    const gain = slider('Volume', -12, 30, 1, clip.edit.gain_db, v => (v > 0 ? '+' : '') + v + ' dB', v => clip.edit.gain_db = v,
+      'Boost or lower this recording before transcription. Red on the waveform means it would clip.');
+    const sens = slider('Speech sensitivity', 1, 5, 1, clip.edit.sensitivity, v => SENS_LABELS[v], v => clip.edit.sensitivity = v,
+      'Higher picks up quieter or more distant voices, but also more noise.');
+    const gate = slider('Noise gate', GATE_OFF, -20, 1, clip.edit.gate_db ?? GATE_OFF, v => v <= GATE_OFF ? 'Off' : v + ' dB',
+      v => clip.edit.gate_db = v <= GATE_OFF ? null : v, 'Silences everything quieter than the dashed line (hiss, hum, room noise).');
+    const rw = el('label', 'ctl'); rw.title = 'Turns down the scratchy sound of the mic rubbing on clothes';
+    const rtop = el('span', 'ctl-top'); rtop.append(el('span', null, 'Rustle cleanup'));
+    const rs = el('select');
+    RUSTLE_OPTS.forEach(([v, n]) => { const o = el('option', null, v === '' ? `Default (${defaultRustle >= 1 ? 'Strong' : defaultRustle > 0 ? 'Gentle' : 'Off'})` : n); o.value = v; rs.append(o); });
+    rs.value = clip.edit.rustle === null ? '' : String(clip.edit.rustle);
+    rs.onchange = () => { clip.edit.rustle = rs.value === '' ? null : +rs.value; };
+    rw.append(rtop, rs);
+    ctrls.append(gain.w, sens.w, gate.w, rw);
+    const dc = el('label', 'ctl check');
+    const dci = el('input'); dci.type = 'checkbox'; dci.checked = clip.edit.declip;
+    dci.onchange = () => { clip.edit.declip = dci.checked; drawWave(clip); };
+    dc.append(dci, el('span', null, 'Repair clipping'));
+    dc.title = 'Rebuilds peaks that were cut off because the recording was too loud';
+    if (clip.issues?.some(i => i.code === 'clipping') || clip.edit.declip) ctrls.append(dc);
+    row.append(ctrls);
+
+    fix.onclick = () => {
+      const s = clip.suggested;
+      if (s.gain_db !== undefined) { gain.inp.value = s.gain_db; gain.upd(); }
+      if (s.sensitivity !== undefined) { sens.inp.value = s.sensitivity; sens.upd(); }
+      if (s.gate_db !== undefined) { gate.inp.value = s.gate_db; gate.upd(); }
+      if (s.declip !== undefined) { dci.checked = s.declip; dci.onchange(); }
+      toast('Suggested levels applied. Click the waveform to listen.');
+    };
+    return row;
+  }
+
+  async function loadClips(date, only) {
+    const list = $('clips-list');
+    list.replaceChildren(el('div', 'note', 'Reading the recordings…'));
+    let r;
+    try { r = await api(`/api/days/${date}/clips`); }
+    catch (e) { list.replaceChildren(el('div', 'error-box', `Couldn't read the recordings: ${e.message}`)); return []; }
+    const clips = only ? r.clips.filter(c => only.includes(c.name)) : r.clips;
+    const flagged = clips.filter(c => c.issues?.length).length;
+    $('clips-summary').textContent = `${plural(clips.length, 'recording')}` + (flagged ? ` · ${flagged} need${flagged === 1 ? 's' : ''} attention` : '');
+    list.replaceChildren(...clips.map(c => clipRow(c, r.default_rustle)));
+    requestAnimationFrame(() => clips.forEach(drawWave));
+    return clips;
+  }
+
+  const levelsPayload = clips => Object.fromEntries(clips.map(c => [c.name, c.edit]));
+
+  // Every manual Transcribe / Re-transcribe opens this, showing all of the day's recordings at once
+  async function askTranscribe(title, date = state.date) {
+    const dlg = $('process-dlg');
+    dlg.classList.remove('blocked');
+    const isCurrent = date === state.date;
+    const hint = (isCurrent ? state.data?.speaker_hint : null) || {};
+    const n = isCurrent ? Object.keys(state.colors).filter(s => s !== 'Unknown').length : 2;
+    $('process-title').textContent = `${title}: ${shortDate(date)}`;
+    $('process-lead').textContent = 'Check each recording’s levels, then start. Click a waveform to hear it with your settings.';
     const mode = hint.num_speakers ? 'exact' : hint.min_speakers ? 'min' : 'auto';
     document.querySelector(`input[name=count-mode][value=${mode}]`).checked = true;
     $('count-exact').value = hint.num_speakers || Math.max(n, 2);
     $('count-min').value = hint.min_speakers || Math.max(n + 1, 2);
-    $('process-note').textContent = isReady()
+    $('process-note').textContent = libItem(date)?.status === 'ready'
       ? 'Names you have given people are kept. Takes a few minutes for a long day.'
       : 'You can keep browsing while it runs.';
-    const dlg = $('process-dlg');
+    $('process-actions').replaceChildren(
+      Object.assign(el('button', 'btn', 'Cancel'), { value: 'cancel', formNoValidate: true }),
+      Object.assign(el('button', 'btn primary', 'Start'), { value: 'ok' }));
     dlg.returnValue = '';
-    dlg.onclose = () => {
+    let clips = [];
+    dlg.onclose = async () => {
+      stopPreview();
       if (dlg.returnValue !== 'ok') return;
       const m = document.querySelector('input[name=count-mode]:checked').value;
       const h = m === 'exact' ? { num_speakers: +$('count-exact').value }
         : m === 'min' ? { min_speakers: +$('count-min').value } : {};
-      transcribe([state.date], h);
+      try { if (clips.length) await api('/api/levels', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ levels: levelsPayload(clips), reviewed: true }) }); }
+      catch (e) { toast(`Couldn't save the levels: ${e.message}`); return; }
+      transcribe([date], h);
     };
     dlg.showModal();
+    clips = await loadClips(date);
   }
+
+  // A flagged recording stops the whole queue: this pops up on any page until it's dealt with
+  async function showBlocked(b) {
+    const dlg = $('process-dlg');
+    state.blockedFor = b.date + '|' + b.clips.join(',');
+    dlg.classList.add('blocked');
+    $('process-title').textContent = `Check ${b.clips.length > 1 ? 'these recordings' : 'this recording'} before transcribing continues`;
+    $('process-lead').textContent = `${shortDate(b.date)}: something looks unusual, so transcription is paused for everything until you choose. Click the waveform to listen.`;
+    $('process-note').textContent = '';
+    const send = async (levels, action) => {
+      try {
+        if (levels) await api('/api/levels', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ levels, reviewed: true }) });
+        await api('/api/blocked', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action }) });
+        state.blockedFor = null;
+        stopPreview(); dlg.close();
+        toast(action === 'skip' ? `Skipped ${shortDate(b.date)}` : 'Transcription resumed');
+        refreshLibrary();
+      } catch (e) { toast(e.message); }
+    };
+    let clips = [];
+    const skip = Object.assign(el('button', 'btn', 'Skip this day'), { type: 'button', onclick: () => send(null, 'skip') });
+    const asIs = Object.assign(el('button', 'btn', 'Use as is'), { type: 'button', onclick: () => send(Object.fromEntries(clips.map(c => [c.name, {}])), 'continue') });
+    const go_ = Object.assign(el('button', 'btn primary', 'Continue with these levels'), { type: 'button', onclick: () => send(levelsPayload(clips), 'continue') });
+    $('process-actions').replaceChildren(skip, asIs, go_);
+    dlg.onclose = null;
+    if (!dlg.open) dlg.showModal();
+    clips = await loadClips(b.date, b.clips);
+  }
+  // The paused-queue dialog can't be dismissed with Esc: a choice is required
+  $('process-dlg').addEventListener('cancel', e => { if ($('process-dlg').classList.contains('blocked')) e.preventDefault(); });
   $('lib-list').addEventListener('click', e => {
     const card = e.target.closest('.day-card');
     if (card) { go(card.dataset.date); closeDrawers(); }
