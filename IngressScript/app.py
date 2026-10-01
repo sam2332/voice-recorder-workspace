@@ -98,6 +98,7 @@ SETTINGS_PATH = Path(os.getenv("SETTINGS_PATH", DB_PATH.parent / "settings.json"
 DEFAULT_SETTINGS = {
     "setup_done": False,          # nothing is transcribed automatically until the user has been through setup
     "auto_transcribe": False,     # transcribe new / incomplete days in the background
+    "auto_sync": False,           # start syncing on startup if the recorder is connected
     "language": LANGUAGE or "en",   # "" = detect
     "rustle_strength": RUSTLE_STRENGTH,
 }
@@ -114,7 +115,7 @@ def load_settings() -> dict:
 
 
 def save_settings(patch: dict) -> dict:
-    allowed = {"setup_done": bool, "auto_transcribe": bool, "language": str, "rustle_strength": float}
+    allowed = {"setup_done": bool, "auto_transcribe": bool, "auto_sync": bool, "language": str, "rustle_strength": float}
     with _settings_lock:
         data = load_settings()
         for key, kind in allowed.items():
@@ -299,6 +300,9 @@ def init_db():
     # Which of the day's diarization voices a print came from, so naming that voice can move it
     if "label" not in {r[1] for r in conn.execute("PRAGMA table_info(voiceprints)")}:
         conn.execute("ALTER TABLE voiceprints ADD COLUMN label TEXT")
+    # kind = 'tv' marks a TV / YouTube / music voice: matched like a person, but its lines are hidden as noise
+    if "kind" not in {r[1] for r in conn.execute("PRAGMA table_info(speakers)")}:
+        conn.execute("ALTER TABLE speakers ADD COLUMN kind TEXT")
     # Older databases kept a single averaged embedding per speaker; keep it as a 'legacy' print
     conn.execute("""
         INSERT INTO voiceprints (speaker_id, embedding, seconds, day, created)
@@ -879,6 +883,25 @@ def forget_unused_speakers(conn, keep: set[str] = frozenset(), skip_day: str | N
             conn.execute("DELETE FROM speakers WHERE id = ?", (spk_id,))
 
 
+def tv_names() -> set[str]:
+    """Voice profiles the user marked as TV / YouTube (their lines are always hidden as noise)."""
+    conn = init_db()
+    try:
+        return {r[0] for r in conn.execute("SELECT name FROM speakers WHERE kind = 'tv'")}
+    finally:
+        conn.close()
+
+
+def mark_tv(name: str):
+    conn = init_db()
+    try:
+        conn.execute("INSERT OR IGNORE INTO speakers (name, sample_count) VALUES (?, 0)", (name,))
+        conn.execute("UPDATE speakers SET kind = 'tv' WHERE name = ?", (name,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def teach_voice(date: str, old: str, new: str, labels: list[str] | None = None) -> tuple[list[str], bool]:
     """Naming a voice on a day also teaches it: that day's sample of the voice moves to `new`'s global
     profile, so future days recognise them. Other days' transcripts are not rewritten.
@@ -891,6 +914,7 @@ def teach_voice(date: str, old: str, new: str, labels: list[str] | None = None) 
         for v in targets:
             v["name"] = new
             v["named"] = not re.match(r"(Unknown voice \d+|Speaker_\d+)$", new)   # undo back to an automatic name
+            v.pop("tv", None)   # the TV endpoint sets it again after this
         if targets:
             write_transcript(path, data)
     conn = init_db()
@@ -929,7 +953,7 @@ def teach_voice(date: str, old: str, new: str, labels: list[str] | None = None) 
     return [v["label"] for v in targets], learned
 
 
-# --- LINE VOICEPRINTS (teach a voice from single lines the user moved to someone) ---
+# --- LINE VOICES (teach a voice from single lines the user moved to someone) ---
 # Same wespeaker model the diarization centroids come from, so line embeddings score directly against
 # stored voiceprints. Measured on the real 2026-10-01 day: lines of 2 s+ score 0.6-0.9 against their own
 # person; ~1 s lines are unreliable (0.2-0.5), so they are never learned from.
@@ -1448,6 +1472,13 @@ class Engine:
                         others.append(l)
                 return sorted(set(others))
 
+            # Voices recognised as a TV / YouTube profile: lines stay visible, tagged TV in the viewer
+            tv = tv_names()
+            for l in voices:
+                if names[l] in tv:
+                    voice_info[l]["tv"] = True
+                    log(f"      {l} is TV ('{names[l]}')")
+
             timeline = []
             for line in lines:
                 if not line["text"].strip():
@@ -1671,6 +1702,7 @@ def mark_speaker_noise(date: str, speaker: str, noise: bool, lines: list[dict] |
 def people_summary() -> list[dict]:
     """Everyone named in any transcript: the days and recordings they're in and how much they talked."""
     people: dict[str, dict] = {}
+    tv = tv_names()
     for date, path in all_transcripts():
         try:
             data = load_transcript(path)
@@ -1719,8 +1751,87 @@ def people_summary() -> list[dict]:
         out.append({"name": p["name"], "seconds": round(p["seconds"], 1), "lines": p["lines"], "highlights": highlights[:12],
                     "days": days, "recordings": sum(len(d["recordings"]) for d in days),
                     "first_seen": days[-1]["date"], "last_seen": days[0]["date"],
-                    "voiceprints": prints.get(p["name"], 0)})
+                    "voiceprints": prints.get(p["name"], 0), "tv": p["name"] in tv})
     return sorted(out, key=lambda p: (-len(p["days"]), -p["seconds"]))
+
+
+def voice_profiles() -> list[dict]:
+    """Every voice profile in the DB with its voiceprints, and for each print a few clean lines of that
+    voice on that day to listen to (so a print learned from the wrong voice is easy to spot)."""
+    conn = init_db()
+    try:
+        rows = conn.execute("SELECT s.name, s.kind, v.id, v.day, v.label, v.seconds, v.created FROM speakers s "
+                            "LEFT JOIN voiceprints v ON v.speaker_id = s.id ORDER BY s.name, v.created DESC").fetchall()
+    finally:
+        conn.close()
+    days: dict[str, dict] = {}
+
+    def day_data(date):
+        if date not in days:
+            p = transcript_path(date)
+            days[date] = load_transcript(p) if p.is_file() else {}
+            if days[date]:
+                wav = day_dir(date) / days[date].get("audio", "merged.wav")
+                days[date]["_audio"] = f"/audio/{date}/{wav.name}?v={int(wav.stat().st_mtime)}" if wav.exists() else None
+        return days[date]
+
+    out: dict[str, dict] = {}
+    for name, kind, pid, day, label, seconds, created in rows:
+        prof = out.setdefault(name, {"name": name, "tv": kind == "tv", "prints": []})
+        if pid is None:
+            continue
+        pr = {"id": pid, "day": day, "label": label, "seconds": round(seconds or 0, 1), "created": created, "samples": [], "audio": None}
+        data = day_data(day) if day and day != "legacy" else {}
+        if data:
+            # Lines of the voice the print came from: its diarization label's current name on that day
+            who = next((v["name"] for v in data.get("voices", []) if v.get("label") == label), name)
+            if label == "lines":
+                who = name
+            segs = [s for s in data.get("segments", []) if s.get("speaker") == who and not s.get("noise")
+                    and not s.get("overlap") and 1.5 <= s["end"] - s["start"] <= 15]
+            segs.sort(key=lambda s: -(s["end"] - s["start"]))
+            pr["samples"] = [{"start": s["start"], "end": s["end"], "text": s["text"]} for s in segs[:3]]
+            pr["audio"] = data.get("_audio")
+            pr["heard_as"] = who
+        prof["prints"].append(pr)
+    return sorted(out.values(), key=lambda p: (p["tv"], p["name"].lower()))
+
+
+def delete_voiceprint(pid: int) -> str | None:
+    conn = init_db()
+    try:
+        row = conn.execute("SELECT s.id, s.name FROM voiceprints v JOIN speakers s ON s.id = v.speaker_id WHERE v.id = ?",
+                           (pid,)).fetchone()
+        if not row:
+            return None
+        conn.execute("DELETE FROM voiceprints WHERE id = ?", (pid,))
+        conn.execute("UPDATE speakers SET sample_count = (SELECT COUNT(*) FROM voiceprints WHERE speaker_id = ?) WHERE id = ?",
+                     (row[0], row[0]))
+        conn.commit()
+        return row[1]
+    finally:
+        conn.close()
+
+
+def delete_profile(name: str) -> bool:
+    """Forget a voice profile and all its voiceprints. Transcripts keep the name on their lines."""
+    conn = init_db()
+    try:
+        n = conn.execute("DELETE FROM speakers WHERE name = ?", (name,)).rowcount
+        conn.commit()
+        return n > 0
+    finally:
+        conn.close()
+
+
+def set_profile_kind(name: str, tv: bool):
+    conn = init_db()
+    try:
+        conn.execute("INSERT OR IGNORE INTO speakers (name, sample_count) VALUES (?, 0)", (name,))
+        conn.execute("UPDATE speakers SET kind = ? WHERE name = ?", ("tv" if tv else None, name))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def has_edits(date: str) -> int:
@@ -1932,7 +2043,8 @@ def ollama_chat(prompt: str, system: str, max_tokens: int = 1500, on_token=None,
         raise RuntimeError(f"Ollama said: {detail or e}") from e
     except (urllib.error.URLError, TimeoutError) as e:
         raise RuntimeError(f"Couldn't reach Ollama at {OLLAMA_URL} ({e}). Is it running?") from e
-    text = re.sub(r"(?s)<think>.*?</think>", "", "".join(parts)).strip()   # in case the model thinks anyway
+    text = re.sub(r"(?s)<think>.*?</think>",
+                    "", "".join(parts)).strip()   # in case the model thinks anyway
     return text if fmt else dedupe_lines(text)
 
 
@@ -2019,7 +2131,7 @@ def summarize_day(date: str, progress=None) -> dict:
         notes = []
         for n, part in enumerate(parts, 1):
             if progress:
-                progress((n - 1) / (len(parts) + 1), f"Reading part {n} of {len(parts)}")
+                progress((n - 1) / (len(parts) + 1), f"Reading part {n} of {len(parts)}" if len(parts) > 1 else "Reading the day")
             notes.append(ollama_chat(
                 f"Part {n} of {len(parts)} of the transcript for {day}:\n\n" + "\n".join(part) +
                 "\n\nWrite compact bullet-point notes on this part only: each conversation (topic, who), anything someone "
@@ -2134,13 +2246,16 @@ def extract_day(date: str, progress=None) -> dict:
     data = load_transcript(transcript_path(date))
     sources = data.get("sources", [])
     lines, refs, names = [], {}, {}
+    tv = tv_names()
     for i, s in enumerate(data.get("segments", [])):
         if s.get("noise") or not s.get("text", "").strip():
             continue
         spk = s.get("speaker", "Unknown")
+        label = spk.replace('_', ' ') + (" (on TV/YouTube)" if spk in tv else "")
         names[re.sub(r"[\s_]+", " ", spk).strip().lower()] = spk
+        names[re.sub(r"[\s_]+", " ", label).strip().lower()] = spk
         refs[i + 1] = s["start"]
-        lines.append(f"[L{i + 1}] {clock_label(sources, s['start'])} {spk.replace('_', ' ')}: {s['text']}")
+        lines.append(f"[L{i + 1}] {clock_label(sources, s['start'])} {label}: {s['text']}")
     if not lines:
         raise RuntimeError("There's no speech in this day's transcript.")
     parts, cur = [], []
@@ -2184,6 +2299,7 @@ def overview_data(days: int = EXTRACT_DAYS) -> dict:
     heard and the extracted items. Days are counted back from the newest transcript."""
     from datetime import date as _d, timedelta
     found = all_transcripts()
+    tv = tv_names()   # TV voices aren't people you saw
     out = []
     if found:
         cutoff = (_d.fromisoformat(found[-1][0]) - timedelta(days=max(1, days))).isoformat()
@@ -2197,7 +2313,7 @@ def overview_data(days: int = EXTRACT_DAYS) -> dict:
             heard: dict[str, dict] = {}
             for seg in data.get("segments", []):
                 name = seg.get("speaker")
-                if not name or name.startswith("Unknown") or seg.get("noise"):
+                if not name or name.startswith("Unknown") or seg.get("noise") or name in tv:
                     continue
                 p = heard.setdefault(name, {"name": name, "seconds": 0.0, "lines": 0, "first_line": seg["start"]})
                 p["seconds"] += max(0.0, seg["end"] - seg["start"]); p["lines"] += 1
@@ -2481,6 +2597,17 @@ def create_app(auto_process: bool = False, force: bool = False):
                 processor.enqueue(d)
 
     syncer = Syncer(on_done=after_sync)
+    # Auto-sync: if enabled and a recorder with new files is plugged in at startup, start sync immediately.
+    # This uses the normal syncer, so the progress UI will be visible to the user in the viewer.
+    if setting("auto_sync"):
+        recorders = find_recorders()
+        if recorders:
+            # Start sync for the first recorder that has new recordings
+            for r in recorders:
+                if r["new"] > 0:
+                    syncer.start(r["root"])
+                    break
+
     if auto_process:
         processor.watch(force=force)   # only queues work once auto-transcribe is switched on
     checks_cache: dict = {}
@@ -2507,6 +2634,7 @@ def create_app(auto_process: bool = False, force: bool = False):
     class SettingsBody(BaseModel):
         setup_done: bool | None = None
         auto_transcribe: bool | None = None
+        auto_sync: bool | None = None
         language: str | None = None
         rustle_strength: float | None = None
 
@@ -2595,6 +2723,7 @@ def create_app(auto_process: bool = False, force: bool = False):
     def put_settings(body: SettingsBody):
         saved = save_settings(body.model_dump(exclude_none=True))
         log(f"Settings saved: auto-transcribe {'on' if saved['auto_transcribe'] else 'off'}, "
+            f"auto-sync {'on' if saved['auto_sync'] else 'off'}, "
             f"language {saved['language'] or 'auto'}, rustle {saved['rustle_strength']}")
         return {"settings": saved}
 
@@ -2798,8 +2927,9 @@ def create_app(auto_process: bool = False, force: bool = False):
         finally:
             conn.close()
         names |= {p["name"] for p in people_summary()}
-        names = {n for n in names if not n.startswith("Unknown")}
-        return {"speakers": sorted(names, key=str.lower)}
+        tv = tv_names()
+        names = {n for n in names if not n.startswith("Unknown") and n not in tv}
+        return {"speakers": sorted(names, key=str.lower), "tv": sorted(tv, key=str.lower)}
 
     summarizer = Summarizer()
 
@@ -2871,6 +3001,38 @@ def create_app(auto_process: bool = False, force: bool = False):
         log(f"{date}: '{body.old}' is '{new}' on this day ({len(changed)} lines)"
             + (f"; {new}'s voice profile learned from it" if learned else ""))
         return {"changed": changed, "labels": labels, "learned": learned}
+
+    class TvVoiceBody(BaseModel):
+        speaker: str
+        name: str   # the channel / show, e.g. "MKBHD"
+
+    @app.post("/api/days/{date}/tv-voice")
+    def tv_voice(date: str, body: TvVoiceBody):
+        """This voice is a TV show / YouTuber: name it and learn its voice as a TV profile. Its lines stay
+        (and any the user had hidden as "TV / music" come back), so facts can be pulled from them.
+        Undo = voice-noise {noise: true, lines: shown} then relabel {old: name, new: speaker, lines, labels}."""
+        check_date(date)
+        if not (transcript_path(date)).is_file():
+            raise HTTPException(404, f"No transcript for {date}")
+        name = body.name.strip()
+        if not name:
+            raise HTTPException(400, "The name can't be empty")
+        if name != body.speaker and name not in tv_names() and name in {p["name"] for p in people_summary()}:
+            raise HTTPException(409, f"{name} is a person, not a TV voice")
+        mark_tv(name)
+        changed = relabel_speaker(date, body.speaker, name)
+        labels, learned = teach_voice(date, body.speaker, name)
+        with TRANSCRIPT_LOCK:
+            path = transcript_path(date)
+            data = json.loads(path.read_text(encoding="utf-8"))
+            for v in data.get("voices", []):
+                if v.get("label") in labels:
+                    v["tv"] = True
+            write_transcript(path, data)
+        shown = mark_speaker_noise(date, name, False)
+        log(f"{date}: '{body.speaker}' is TV '{name}'" + (f" ({len(shown)} hidden lines shown)" if shown else "")
+            + ("; voice learned" if learned else ""))
+        return {"changed": changed, "labels": labels, "shown": shown, "learned": learned}
 
     class TrainBody(BaseModel):
         person: str
@@ -2944,6 +3106,35 @@ def create_app(auto_process: bool = False, force: bool = False):
             raise HTTPException(400, str(e))
         log(f"{'Merged' if body.merge else 'Renamed'} '{body.old}' -> '{body.new}' (updated {updated} transcript(s)).")
         return {"updated": updated}
+
+    @app.get("/api/voices")
+    def voices():
+        return {"profiles": voice_profiles()}
+
+    @app.delete("/api/voices/prints/{pid}")
+    def remove_print(pid: int):
+        name = delete_voiceprint(pid)
+        if name is None:
+            raise HTTPException(404, "That sample is already gone")
+        log(f"Removed one voice sample from '{name}'")
+        return {"name": name}
+
+    class ProfileBody(BaseModel):
+        name: str
+        tv: bool | None = None
+
+    @app.post("/api/voices/kind")
+    def profile_kind(body: ProfileBody):
+        set_profile_kind(body.name, bool(body.tv))
+        log(f"'{body.name}' is now {'a TV / YouTube voice' if body.tv else 'a person'}")
+        return {"ok": True}
+
+    @app.post("/api/voices/delete")
+    def remove_profile(body: ProfileBody):
+        if not delete_profile(body.name):
+            raise HTTPException(404, f"No voice profile called {body.name}")
+        log(f"Deleted voice profile '{body.name}' (transcripts unchanged)")
+        return {"ok": True}
 
     return app
 

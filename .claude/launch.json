@@ -1,6 +1,6 @@
 {
   "version": "0.0.1",
   "configurations": [
-    { "name": "viewer-serve", "runtimeExecutable": "cmd", "runtimeArgs": ["/c", "C:/Users/lilia/AppData/Local/Temp/claude/C--Users-lilia-Desktop-voice-recorder-workspace/82e16b19-d6ba-44c0-9862-08183325ed92/scratchpad/serve.bat"], "port": 5055 }
+    { "name": "viewer-serve", "runtimeExecutable": "cmd", "runtimeArgs": ["/c", "C:/Users/lilia/AppData/Local/Temp/claude/C--Users-lilia-Desktop-voice-recorder-workspace/b8d413d8-3b33-4320-aa4a-764453c01718/scratchpad/serve.bat"], "port": 5055 }
   ]
 }

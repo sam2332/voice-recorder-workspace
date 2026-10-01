@@ -219,7 +219,21 @@
   .ov-filters input[type=search] { flex: 1 1 220px; min-width: 0; }
   .ov-check { font-size: 13px; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
   .ov-count { font-size: 12px; color: var(--muted); margin: 4px 2px 8px; min-height: 1em; }
-  .ov-tablewrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 16px; margin-bottom: 16px; }
+  .home-inner.ov-wide { max-width: 1240px; }
+  .ov-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0 2px; }
+  .ov-tab { border: 1px solid var(--border); background: var(--surface); border-radius: 999px; padding: 5px 12px; font-size: 13px; color: var(--muted); }
+  .ov-tab:hover { border-color: var(--accent); color: inherit; }
+  .ov-tab.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+  .ov-tab .n { opacity: .7; margin-left: 5px; font-weight: 400; }
+  .ov-tablewrap { margin-bottom: 16px; }
+  .ov-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 12px; }
+  .ov-card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+  .ov-card-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; }
+  .ov-card-top .prec { margin-left: auto; }
+  .ov-card .ov-text { font-size: 14px; line-height: 1.45; }
+  .ov-card.ov-done .ov-text { text-decoration: line-through; color: var(--muted); }
+  .ov-card .pday-date { white-space: nowrap; }
+  .ov-card-people:empty { display: none; }
   .ov-empty { padding: 12px 16px; margin: 0; }
   .ov-table { border-collapse: collapse; width: 100%; font-size: 14px; }
   .ov-table th { text-align: left; font-size: 12px; font-weight: 600; color: var(--muted); padding: 10px 12px; border-bottom: 1px solid var(--border); white-space: nowrap; }
@@ -234,6 +248,16 @@
   .ov-kind.k-shopping { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); }
   .ov-person { border: 1px solid var(--border); background: var(--surface-2); border-radius: 999px; padding: 1px 8px; font-size: 12px; margin: 0 4px 4px 0; }
   .ov-person:hover { border-color: var(--accent); }
+  .vprof { margin: 12px 0 4px; border: 1px solid var(--border); border-radius: 12px; padding: 8px 12px; background: var(--bg); }
+  .vprof > summary { cursor: pointer; font-weight: 600; font-size: 14px; }
+  .vprint { border-top: 1px solid var(--border); padding: 8px 0; display: grid; gap: 2px; }
+  .vprint:first-of-type { margin-top: 8px; }
+  .vprint .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; }
+  .vprof-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; border-top: 1px solid var(--border); padding-top: 10px; margin-top: 4px; }
+  .vprof-actions input, .vprof-actions select { padding: 5px 9px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface); font-size: 13px; }
+  .btn.danger { color: var(--danger); }
+  .chip.tv, .tv-badge { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); }
+  .tv-badge { font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 999px; margin-left: 6px; vertical-align: middle; }
   .person-notes { margin: 14px 0 0; padding-top: 12px; border-top: 1px solid var(--border); display: grid; gap: 6px; }
   .person-notes h4 { margin: 0; font-size: 13px; color: var(--muted); font-weight: 600; }
   .pnote { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; font-size: 14px; }
@@ -1013,6 +1037,7 @@
     $('lib-home').classList.toggle('active', state.view === 'home');
     $('lib-people').classList.toggle('active', state.view === 'people');
     $('lib-overview').classList.toggle('active', state.view === 'overview');
+    $('home-inner').classList.toggle('ov-wide', state.view === 'overview');
     const i = state.library.findIndex(d => d.date === state.date);
     // Library is newest first, so "previous" (older) is further down the list
     $('prev-day').disabled = i < 0 || i >= state.library.length - 1;
@@ -1196,6 +1221,12 @@
     const l1 = el('label', 'row-l'); const t1 = el('div');
     t1.append(el('div', null, 'Transcribe new recordings automatically'), el('div', 'hint', 'Off: new days wait until you press Transcribe. On: they start as soon as they arrive.'));
     l1.append(t1, auto);
+
+    const async = el('input', 'switch'); async.type = 'checkbox'; async.checked = !!s.auto_sync;
+    const la = el('label', 'row-l'); const ta = el('div');
+    ta.append(el('div', null, 'Sync recorder automatically on startup'), el('div', 'hint', 'If enabled, the app will automatically sync any plugged-in recorder when it starts.'));
+    la.append(ta, async);
+
     const lang = el('select'); LANGS.forEach(([v, n]) => { const o = el('option', null, n); o.value = v; lang.append(o); }); lang.value = s.language || '';
     const l2 = el('label', 'row-l'); const t2 = el('div');
     t2.append(el('div', null, 'Language'), el('div', 'hint', 'Choosing it avoids mistakes when a day starts with noise.'));
@@ -1205,9 +1236,9 @@
     const l3 = el('label', 'row-l'); const t3 = el('div');
     t3.append(el('div', null, 'Clothing-rustle cleanup'), el('div', 'hint', 'Turns down the scratchy sound of the mic rubbing on clothes. Voices are left alone.'));
     l3.append(t3, rustle);
-    form.append(l1, l2, l3);
+    form.append(l1, la, l2, l3);
     const actions = el('div', 'actions');
-    actions.append(btn(saveLabel, 'primary', () => onSave({ auto_transcribe: auto.checked, language: lang.value, rustle_strength: +rustle.value })));
+    actions.append(btn(saveLabel, 'primary', () => onSave({ auto_transcribe: auto.checked, auto_sync: async.checked, language: lang.value, rustle_strength: +rustle.value })));
     form.append(actions);
     return form;
   }
@@ -1290,7 +1321,10 @@
     closeDrawers(); renderLibrary(); updateNav();
     $('home').scrollTop = 0;
     $('home-inner').replaceChildren(el('div', 'note', 'Gathering everyone from your transcripts…'));
-    try { state.people = (await api('/api/people')).people; }
+    try {
+      const [pp, vv] = await Promise.all([api('/api/people'), api('/api/voices')]);
+      state.people = pp.people; state.profiles = vv.profiles;
+    }
     catch (e) { $('home-inner').replaceChildren(el('div', 'error-box', `Couldn't load people: ${e.message}`)); return; }
     if (state.view === 'people') renderPeople(focus);
   }
@@ -1354,19 +1388,18 @@
       ov.filters = el('div', 'ov-filters');
       const q = el('input'); q.type = 'search'; q.placeholder = 'Search everything…'; q.setAttribute('aria-label', 'Search the overview');
       q.oninput = () => { ov.q = q.value; renderOverviewTable(); };
-      ov.kindSel = el('select'); ov.kindSel.setAttribute('aria-label', 'Type');
-      [['', 'All types'], ...Object.entries(KINDS)].forEach(([v, l]) => { const o = el('option', null, l); o.value = v; ov.kindSel.append(o); });
-      ov.kindSel.onchange = () => { ov.kind = ov.kindSel.value; renderOverviewTable(); };
+      ov.tabs = el('div', 'ov-tabs'); ov.tabs.setAttribute('role', 'tablist');
       ov.personSel = el('select'); ov.personSel.setAttribute('aria-label', 'Person');
       ov.personSel.onchange = () => { ov.person = ov.personSel.value; renderOverviewTable(); };
       const done = el('label', 'ov-check'); const cb = el('input'); cb.type = 'checkbox';
       cb.onchange = () => { ov.hideDone = cb.checked; renderOverviewTable(); };
       done.append(cb, ' Hide finished to-dos');
-      ov.filters.append(q, ov.kindSel, ov.personSel, done);
+      ov.filters.append(q, ov.personSel, done);
       ov.count = el('div', 'ov-count');
       ov.tableWrap = el('div', 'ov-tablewrap');
       ov.saw = el('div');
-      inner.replaceChildren(head, ov.status, ov.filters, ov.count, ov.tableWrap, ov.saw);
+      inner.classList.add('ov-wide');
+      inner.replaceChildren(head, ov.status, ov.tabs, ov.filters, ov.count, ov.tableWrap, ov.saw);
     }
 
     // Status: what the background extraction is doing
@@ -1427,26 +1460,35 @@
     const done = store.get('ovDone', {});
     const words = ov.q.toLowerCase().split(/\s+/).filter(Boolean);
     const all = overviewRows();
-    const rows = all.filter(r => {
-      if (ov.kind && r.kind !== ov.kind) return false;
+    // Every filter but the tab, so each tab can show how many items it would hold
+    const base = all.filter(r => {
       if (ov.person && !r.people.includes(ov.person)) return false;
       if (ov.hideDone && r.kind === 'task' && done[taskKey(r)]) return false;
       const hay = [r.text, KINDS[r.kind], r.date, shortDate(r.date), ...r.people.map(displayName)].join(' ').toLowerCase();
       return words.every(w => hay.includes(w));
     });
+    const counts = {};
+    base.forEach(r => { counts[r.kind] = (counts[r.kind] || 0) + 1; });
+    if (ov.kind && !counts[ov.kind] && !all.some(r => r.kind === ov.kind)) ov.kind = '';
+    ov.tabs.replaceChildren();
+    [['', 'All', base.length], ...Object.entries(KINDS).filter(([k]) => all.some(r => r.kind === k)).map(([k, l]) => [k, l, counts[k] || 0])]
+      .forEach(([k, l, n]) => {
+        const t = el('button', 'ov-tab' + (ov.kind === k ? ' active' : ''));
+        t.setAttribute('role', 'tab'); t.setAttribute('aria-selected', ov.kind === k);
+        t.append(l, el('span', 'n', String(n)));
+        t.onclick = () => { ov.kind = k; renderOverviewTable(); };
+        ov.tabs.append(t);
+      });
+    const rows = ov.kind ? base.filter(r => r.kind === ov.kind) : base;
     ov.count.textContent = all.length ? (rows.length === all.length ? plural(all.length, 'item') : `${rows.length} of ${plural(all.length, 'item')}`) : '';
     if (!rows.length) {
       ov.tableWrap.replaceChildren(el('p', 'muted ov-empty', all.length ? 'Nothing matches that.' : 'Nothing extracted yet. It appears here as each day is read.'));
       return;
     }
-    const table = el('table', 'ov-table');
-    const hr = el('tr');
-    ['', 'Day', 'Type', 'What', 'People', 'At'].forEach(h => hr.append(el('th', null, h)));
-    const thead = el('thead'); thead.append(hr); table.append(thead);
-    const body = el('tbody');
+    const grid = el('div', 'ov-grid');
     for (const r of rows.slice(0, 600)) {
-      const tr = el('tr');
-      const c0 = el('td', 'ov-tick');
+      const tr = el('div', 'ov-card');
+      const top = el('div', 'ov-card-top');
       if (r.kind === 'task') {
         const cb = el('input'); cb.type = 'checkbox'; cb.checked = !!done[taskKey(r)]; cb.setAttribute('aria-label', 'Done');
         cb.onchange = () => {
@@ -1456,57 +1498,148 @@
           tr.classList.toggle('ov-done', cb.checked);
           if (ov.hideDone) renderOverviewTable();
         };
-        c0.append(cb);
+        top.append(cb);
         tr.classList.toggle('ov-done', cb.checked);
       }
-      const day = el('td'); const db = el('button', 'pday-date', shortDate(r.date)); db.onclick = () => go(r.date); day.append(db);
-      const kind = el('td'); kind.append(el('span', `ov-kind k-${r.kind}`, KINDS[r.kind]));
-      const text = el('td', 'ov-text', r.text);
-      const who = el('td');
+      const db = el('button', 'pday-date', shortDate(r.date)); db.onclick = () => go(r.date);
+      if (!ov.kind) top.append(el('span', `ov-kind k-${r.kind}`, KINDS[r.kind]));
+      top.append(db);
+      const text = el('div', 'ov-text', r.text);
+      const who = el('div', 'ov-card-people');
       r.people.forEach(n => {
         const b = el('button', 'ov-person', displayName(n));
         b.onclick = () => { ov.person = n; ov.personSel.value = n; renderOverviewTable(); };
         who.append(b);
       });
-      const at = el('td');
-      if (r.start !== undefined) { const b = el('button', 'prec', r.at); b.title = 'Hear this moment'; b.onclick = () => go(r.date, r.start); at.append(b); }
-      tr.append(c0, day, kind, text, who, at);
-      body.append(tr);
+      if (r.start !== undefined) { const b = el('button', 'prec', r.at); b.title = 'Hear this moment'; b.onclick = () => go(r.date, r.start); top.append(b); }
+      tr.append(top, text, who);
+      grid.append(tr);
     }
-    table.append(body);
-    ov.tableWrap.replaceChildren(table);
+    ov.tableWrap.replaceChildren(grid);
     if (rows.length > 600) ov.tableWrap.append(el('p', 'muted ov-empty', 'Showing the newest 600. Search or filter to narrow it.'));
   }
 
+  // A person's voice profile: the samples it was learned from (play / remove), and rename, merge, TV and delete
+  function profileSection(name, prof, isTv) {
+    const box = el('details', 'vprof');
+    const prints = prof?.prints || [];
+    box.append(el('summary', null, prints.length ? `Voice profile · ${plural(prints.length, 'sample')}` : 'Voice profile · no samples (not recognised by voice)'));
+    const post = (url, body, method = 'POST') => api(url, { method, headers: { 'Content-Type': 'application/json' }, body: body && JSON.stringify(body) });
+    const reload = n => showPeople(n);
+
+    for (const pr of prints) {
+      const row = el('div', 'vprint');
+      const top = el('div', 'row');
+      const when = pr.day === 'legacy' ? 'Old sample (from before per-day samples)' : pr.day === 'lines' ? 'Taught from lines' : shortDate(pr.day);
+      top.append(el('b', null, when),
+        el('span', 'muted', [pr.label === 'lines' ? 'taught from single lines' : pr.seconds ? `${fmtDur(pr.seconds)} of speech` : '',
+          pr.heard_as && pr.heard_as !== name ? `heard as ${displayName(pr.heard_as)} that day` : ''].filter(Boolean).join(' · ')),
+        el('span', 'grow'));
+      if (pr.day && pr.day !== 'legacy') { const o = el('button', 'btn small', 'Open day'); o.onclick = () => go(pr.day); top.append(o); }
+      const rm = el('button', 'btn small', 'Remove sample');
+      rm.title = 'This sample is the wrong voice: stop using it to recognise them';
+      rm.onclick = async () => {
+        if (rm.dataset.sure !== '1') { rm.dataset.sure = '1'; rm.textContent = 'Click again to remove'; return; }
+        try { await post(`/api/voices/prints/${pr.id}`, null, 'DELETE'); } catch (e) { toast(e.message); return; }
+        toast(`Removed a sample from ${displayName(name)}`); reload(name);
+      };
+      top.append(rm); row.append(top);
+      for (const s of pr.samples || []) {
+        const b = el('button', 'vr-snip'); b.type = 'button';
+        b.append(svg(ICONS.play), el('span', null, s.text));
+        b.title = 'Play this line';
+        b.onclick = () => playSnip(s, b, pr.audio);
+        row.append(b);
+      }
+      if (pr.day !== 'legacy' && !(pr.samples || []).length) row.append(el('p', 'muted', 'No clean lines to play from this day.'));
+      box.append(row);
+    }
+
+    // Actions
+    const act = el('div', 'vprof-actions');
+    const rename = el('input'); rename.placeholder = 'New name, then Enter'; rename.value = '';
+    rename.onkeydown = async e => {
+      if (e.key !== 'Enter' || !rename.value.trim()) return;
+      const to = rename.value.trim();
+      try { await post('/api/speakers/rename', { old: name, new: to, merge: false }); }
+      catch (err) { toast(err.message.includes('409') || /exists|taken/i.test(err.message) ? `${to} already exists: use Merge instead` : err.message); return; }
+      toast(`Renamed to ${to} everywhere`); reload(to);
+    };
+    const merge = el('select');
+    const m0 = el('option', null, 'Merge into…'); m0.value = ''; merge.append(m0);
+    (state.profiles || []).map(v => v.name).concat((state.people || []).map(p => p.name))
+      .filter((n, i, a) => n !== name && a.indexOf(n) === i).sort((a, b) => a.localeCompare(b))
+      .forEach(n => { const o = el('option', null, displayName(n)); o.value = n; merge.append(o); });
+    merge.onchange = async () => {
+      const to = merge.value; if (!to) return;
+      const ok = el('button', 'btn small primary', `Merge ${displayName(name)} into ${displayName(to)}`);
+      ok.onclick = async () => {
+        try { await post('/api/speakers/rename', { old: name, new: to, merge: true }); } catch (e) { toast(e.message); return; }
+        toast(`${displayName(name)} merged into ${displayName(to)} on every day`); reload(to);
+      };
+      act.querySelector('.merge-ok')?.remove(); ok.classList.add('merge-ok'); merge.after(ok);
+    };
+    const kind = el('button', 'btn small', isTv ? 'Not TV: a person' : 'Mark as TV / YouTube');
+    kind.title = isTv ? 'Count them as a person again (shows in “who I saw” and talk time)' : 'A YouTuber or show: still transcribed and summarised, but not counted as someone you saw';
+    kind.onclick = async () => {
+      try { await post('/api/voices/kind', { name, tv: !isTv }); } catch (e) { toast(e.message); return; }
+      toast(isTv ? `${displayName(name)} is a person` : `${displayName(name)} is TV / YouTube`); reload(name);
+    };
+    act.append(rename, merge, kind);
+    if (prof) {
+      const del = el('button', 'btn small danger', 'Delete profile');
+      del.title = 'Forget this voice. Lines in transcripts keep the name; new days won’t recognise it.';
+      del.onclick = async () => {
+        if (del.dataset.sure !== '1') { del.dataset.sure = '1'; del.textContent = 'Click again to delete'; return; }
+        try { await post('/api/voices/delete', { name }); } catch (e) { toast(e.message); return; }
+        toast(`Deleted ${displayName(name)}’s voice profile`); reload();
+      };
+      act.append(del);
+    }
+    box.append(act);
+    return box;
+  }
+
   function renderPeople(focus) {
-    const people = state.people || [];
-    $('subtitle').textContent = `${plural(people.length, 'person')} across your transcripts`.replace('persons', 'people');
+    const profiles = Object.fromEntries((state.profiles || []).map(v => [v.name, v]));
+    // Everyone in a transcript, plus voice profiles no transcript uses (yet)
+    const people = [...(state.people || []).map(p => ({ ...p, tv: p.tv || !!profiles[p.name]?.tv }))];
+    for (const v of state.profiles || []) if (!people.some(p => p.name === v.name))
+      people.push({ name: v.name, tv: v.tv, days: [], recordings: 0, seconds: 0, voiceprints: v.prints.length, profileOnly: true });
+    const humans = people.filter(p => !p.tv), tv = people.filter(p => p.tv);
+    $('subtitle').textContent = `${plural(humans.length, 'person')} across your transcripts`.replace('persons', 'people');
     const frag = document.createDocumentFragment();
     const head = el('div');
     head.append(el('h2', 'hello', 'People'),
-      el('p', 'lead', 'Everyone named in your transcripts: the recordings they’re in and the days they were heard. Name voices from a day’s Speakers panel.'));
+      el('p', 'lead', 'Everyone named in your transcripts: the recordings they’re in and the days they were heard. Open “Voice profile” to listen to the samples each voice was learned from.'));
     frag.append(head);
     if (!people.length) {
       const c = card('mic', 'No people yet');
       c.append(el('p', null, 'Once a day is transcribed, the voices in it show up here.'));
       frag.append(c);
     }
-    people.forEach((p, i) => {
+    let i = -1;
+    const section = (list, title) => { if (list.length && title) frag.append(el('div', 'vr-sect', title)); list.forEach(p => personCard(p, ++i)); };
+    const personCard = (p, i) => {
       const c = el('details', 'card person');
-      c.open = focus ? p.name === focus : i < 3;
+      c.open = focus ? p.name === focus : i < 3 && !p.profileOnly;
       const sum = el('summary');
       const av = el('span', 'avatar', initials(displayName(p.name)));
       av.style.background = PALETTE[i % PALETTE.length];
       const info = el('span', 'person-info');
       info.append(el('span', 'person-name', displayName(p.name)),
-        el('span', 'person-meta', [plural(p.days.length, 'day'), plural(p.recordings, 'recording'), `${fmtDur(p.seconds)} talking`,
+        el('span', 'person-meta', p.profileOnly ? `Voice profile only · ${plural(p.voiceprints, 'sample')}, in no transcript`
+          : [plural(p.days.length, 'day'), plural(p.recordings, 'recording'), `${fmtDur(p.seconds)} ${p.tv ? 'heard' : 'talking'}`,
           p.days.length > 1 ? `${shortDate(p.first_seen)} – ${shortDate(p.last_seen)}` : shortDate(p.last_seen)].join(' · ')));
       sum.append(av, info);
-      if (!p.voiceprints) {
+      if (p.tv) sum.append(el('span', 'chip tv', 'TV'));
+      if (!p.voiceprints && !p.profileOnly) {
         const tag = el('span', 'chip', 'name only'); tag.title = 'Named by you on a day; the voice itself is recognised under another name';
         sum.append(tag);
       }
       c.append(sum);
+      c.append(profileSection(p.name, profiles[p.name], p.tv));
+      if (p.profileOnly) { frag.append(c); return; }
 
       // Their own activity grid: darker = more talking that day
       const secs = Object.fromEntries(p.days.map(d => [d.date, Math.max(1, Math.round(d.seconds / 60))]));
@@ -1551,7 +1684,9 @@
         c.append(notes);
       }
       frag.append(c);
-    });
+    };
+    section(humans, tv.length ? `People · ${humans.length}` : '');
+    section(tv, `TV / YouTube · ${tv.length}`);
     $('home-inner').replaceChildren(frag);
     if (focus) requestAnimationFrame(() => [...document.querySelectorAll('.person')].find(x => x.open)?.scrollIntoView({ block: 'start' }));
   }
@@ -1717,8 +1852,11 @@
       if (token !== state.openToken) return;  // the user already picked another day
       // Everyone the voice database knows, for the line editor's "who said it" picker
       api('/api/speakers').then(r => {
-        state.allSpeakers = r.speakers;
-        if (state.date === date && state.view === 'day') renderSpeakers();   // fill the pickers' "Everyone" lists
+        state.allSpeakers = r.speakers; state.tvNames = r.tv || [];
+        if (state.date === date && state.view === 'day') {
+          renderSpeakers();   // fill the pickers' "Everyone" lists
+          if (state.tvNames.length && !state.editing) renderTranscript();   // TV badges
+        }
       }).catch(() => {});
     } else {
       data = state.files[date].data;
@@ -2058,17 +2196,28 @@
     names.filter(n => n !== spk).forEach(n => { const o = el('option', null, displayName(n)); o.value = n; everyone.append(o); });
     sel.append(everyone);
     const nw = el('option', null, 'New person…'); nw.value = '__new__'; sel.append(nw);
-    const hide = el('option', null, 'TV / music: hide this voice'); hide.value = '__hide__'; sel.append(hide);
+    // TV / YouTube voices are learned like people, so new days hide them automatically
+    const tvg = el('optgroup'); tvg.label = 'TV / YouTube (learned, kept, not a person)';
+    (state.tvNames || []).forEach(n => { const o = el('option', null, `TV: ${n}`); o.value = 'tv:' + n; tvg.append(o); });
+    const tvNew = el('option', null, 'New TV channel / show…'); tvNew.value = '__tvnew__'; tvg.append(tvNew);
+    const hide = el('option', null, 'Just hide (don’t learn)'); hide.value = '__hide__'; tvg.append(hide);
+    sel.append(tvg);
     sel.value = spk;
     const input = el('input'); input.placeholder = 'Name, then Enter'; input.classList.add('hidden');
+    let tvMode = false;
     const apply = name => {
       name = (name || '').trim();
       if (!name || name === spk) { sel.value = spk; input.classList.add('hidden'); sel.classList.remove('hidden'); return; }
-      relabelVoice(spk, name);
+      if (tvMode) tvVoice(spk, name); else relabelVoice(spk, name);
     };
     sel.onchange = () => {
-      if (sel.value === '__new__') { sel.classList.add('hidden'); input.classList.remove('hidden'); input.focus(); }
+      if (sel.value === '__new__' || sel.value === '__tvnew__') {
+        tvMode = sel.value === '__tvnew__';
+        input.placeholder = tvMode ? 'Channel or show, then Enter' : 'Name, then Enter';
+        sel.classList.add('hidden'); input.classList.remove('hidden'); input.focus();
+      }
       else if (sel.value === '__hide__') { sel.value = spk; hideVoice(spk); }
+      else if (sel.value.startsWith('tv:')) { const n = sel.value.slice(3); sel.value = spk; tvVoice(spk, n); }
       else apply(sel.value);
     };
     input.onkeydown = e => {
@@ -2118,6 +2267,47 @@
     refreshLibrary();
   }
 
+  // One line that is a TV show or music: flag just that line as noise
+  async function hideLine(s) {
+    const date = state.date;
+    const lines = [{ start: s.start, text: s.text }];
+    const post = noise => api(`/api/days/${date}/voice-noise`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ speaker: s.speaker, noise, lines }) });
+    try { await post(true); } catch (e) { toast(e.message); return; }
+    state.editing = null;
+    await openDay(date, { keepPosition: true });
+    toast('Line hidden as TV / music', { action: 'Undo', onAction: async () => {
+      try { await post(false); } catch (e) { toast(e.message); return; }
+      if (state.date === date) await openDay(date, { keepPosition: true });
+      toast('Undone'); refreshLibrary();
+    } });
+    refreshLibrary();
+  }
+
+  // This voice is a YouTuber / TV show: name it, learn it, hide its lines (and on new days automatically)
+  async function tvVoice(spk, name) {
+    const date = state.date;
+    const json = (url, body) => api(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    let r;
+    try { r = await json(`/api/days/${date}/tv-voice`, { speaker: spk, name }); } catch (e) { toast(e.message); return; }
+    await openDay(date, { keepPosition: true });
+    if ($('voices-dlg').open) { state.reviewNamed.add(name); renderVoiceReview(); }
+    loadSpeakers();
+    toast(`${displayName(spk)} is TV: ${name}${r.learned ? '. Recognised on new days too' : ''}`, { action: 'Undo', onAction: async () => {
+      try {
+        if (r.shown.length) await json(`/api/days/${date}/voice-noise`, { speaker: name, noise: true, lines: r.shown });
+        await json(`/api/days/${date}/relabel`, { old: name, new: spk, lines: r.changed, labels: r.labels });
+      } catch (e) { toast(e.message); return; }
+      if (state.date === date) await openDay(date, { keepPosition: true });
+      if ($('voices-dlg').open) { state.reviewNamed.delete(name); renderVoiceReview(); }
+      loadSpeakers(); toast('Undone'); refreshLibrary();
+    } });
+    refreshLibrary();
+  }
+
+  function loadSpeakers() {
+    return api('/api/speakers').then(x => { state.allSpeakers = x.speakers; state.tvNames = x.tv || []; }).catch(() => {});
+  }
+
   async function relabelVoice(from, to) {
     const date = state.date;
     const post = body => api(`/api/days/${date}/relabel`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -2125,7 +2315,7 @@
     try { r = await post({ old: from, new: to }); } catch (e) { toast(e.message); return; }
     await openDay(date, { keepPosition: true });
     if ($('voices-dlg').open) { state.reviewNamed.add(to); renderVoiceReview(); }
-    api('/api/speakers').then(x => { state.allSpeakers = x.speakers; }).catch(() => {});
+    loadSpeakers();
     toast(r.learned
       ? `${displayName(from)} is ${displayName(to)}. ${displayName(to)}'s voice will be recognised on new days`
       : `${displayName(from)} is ${displayName(to)} on this day`, { action: 'Undo', onAction: async () => {
@@ -2157,12 +2347,12 @@
   snip.addEventListener('timeupdate', () => { if (snip.currentTime >= snipEnd) stopSnip(); });
   snip.addEventListener('ended', stopSnip);
 
-  function playSnip(seg, b) {
+  function playSnip(seg, b, url = state.data?.audio_url) {
     if (snipBtn === b) { stopSnip(); return; }
     stopSnip();
-    if (!state.data?.audio_url) { toast('No audio for this day'); return; }
+    if (!url) { toast('No audio for this day'); return; }
     if (!audio.paused) audio.pause();
-    if (snip.getAttribute('src') !== state.data.audio_url) snip.src = state.data.audio_url;
+    if (snip.getAttribute('src') !== url) snip.src = url;
     snipEnd = Math.min(seg.end, seg.start + 15) + 0.15;
     const go = () => { snip.currentTime = Math.max(0, seg.start - 0.1); snip.play().catch(e => toast(`Couldn't play: ${e.message}`)); };
     snip.readyState >= 1 ? go() : snip.addEventListener('loadedmetadata', go, { once: true });
@@ -2310,7 +2500,9 @@
         const head = el('div', 'turn-head');
         const when = el('span', 'when', clockAt(s.start) || fmt(s.start));
         when.title = `${fmt(s.start)} into the day`;
-        head.append(el('span', 'who', displayName(s.speaker)), when);
+        const who = el('span', 'who', displayName(s.speaker));
+        if ((state.tvNames || []).includes(s.speaker)) who.append(el('span', 'tv-badge', 'TV'));
+        head.append(who, when);
         body.append(head);
         turn.append(av, body);
         frag.append(turn);
@@ -2745,12 +2937,16 @@
 
     // Who said it: everyone seen today + everyone in the voice database + a new name
     const who = el('select'); who.title = 'Who said this line';
-    const names = [...new Set([...Object.keys(state.colors), ...(state.allSpeakers || [])])].filter(Boolean);
+    const names = [...new Set([...Object.keys(state.colors), ...(state.allSpeakers || []), ...(state.tvNames || [])])].filter(Boolean);
     names.forEach(n => { const o = el('option', null, displayName(n)); o.value = n; who.append(o); });
     const nw = el('option', null, 'New person…'); nw.value = '__new__'; who.append(nw);
+    const tv = el('option', null, 'TV / music: hide this line'); tv.value = '__hide__'; who.append(tv);
     who.value = s.speaker;
     const newName = el('input'); newName.placeholder = 'Name'; newName.classList.add('hidden');
-    who.onchange = () => { newName.classList.toggle('hidden', who.value !== '__new__'); if (who.value === '__new__') newName.focus(); };
+    who.onchange = () => {
+      if (who.value === '__hide__') { who.value = s.speaker; hideLine(s); return; }
+      newName.classList.toggle('hidden', who.value !== '__new__'); if (who.value === '__new__') newName.focus();
+    };
     const speaker = () => who.value === '__new__' ? newName.value.trim() : who.value;
     const tidy = t => t.replace(/\s+/g, ' ').trim();
 

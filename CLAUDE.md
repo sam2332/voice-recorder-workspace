@@ -116,6 +116,21 @@ A 2.5-hour day takes about 4 minutes to diarize on the RTX 5060 Ti.
 - Naming uses the normal `whoPicker` → `relabelVoice` (day relabel + `teach_voice`, which sets `voices[].named`).
 - "Done" posts `POST /api/days/{date}/voices/reviewed`. It is wired to the button's click: the dialog `close` event never fired in the desktop app's built-in browser.
 
+**TV / YouTube voices:** `speakers.kind = 'tv'` (column added by `init_db`) marks a voice profile as TV. These profiles are matched like people, one per channel or show.
+- TV lines are **not** noise. They stay visible with a TV badge, the overview extraction reads them labelled "(on TV/YouTube)", and they're left out of the overview's "who I saw" (that's the user's choice: "make tv/music its own person so i can extract important things from it").
+- In the voice picker, "TV / YouTube" calls `POST /api/days/{date}/tv-voice {speaker, name}`. That runs `mark_tv`, `relabel_speaker` and `teach_voice`, then un-hides that voice's lines (`mark_speaker_noise(..., False)`) and sets `voices[].tv`. It refuses with a 409 if `name` is an existing person. Undo is `voice-noise {noise:true, lines: shown}` followed by `relabel {lines: changed, labels}`.
+- `process_day` only sets `voices[].tv` for matched TV voices.
+- `/api/speakers` returns `tv` separately and leaves TV names out of `speakers`.
+- **Voice profiles on the People page:** `GET /api/voices` → `voice_profiles()` lists every DB profile and its prints. Each print comes with up to 3 clean sample lines of the voice it was learned from on that day (found through `voices[].label`) and `audio`. Other routes:
+  - `DELETE /api/voices/prints/{id}` removes one print;
+  - `POST /api/voices/kind {name, tv}` switches between TV and person;
+  - `POST /api/voices/delete {name}` deletes the profile (transcripts keep the name);
+  - rename and merge use `/api/speakers/rename`.
+
+  People are grouped into People and TV / YouTube, and profiles that no transcript uses still get a card.
+- "Just hide (don't learn)" is the old per-day noise flag. The line editor's "TV / music: hide this line" flags one line only and does not learn.
+- Voices only: instrumental music isn't recognised.
+
 **Teaching voices from single lines:** moving a line to someone in the line editor adds it to a per-day tray (`localStorage` `teach:<date>`). "Teach voices…" opens `#teach-dlg`:
 - **Stage 1** `POST /api/days/{date}/voice-train {person, lines, remove}` → `train_lines`. Each line of `MIN_TRAIN_LINE_SECONDS` (2 s) or more with no overlap is embedded by `LineVoices`. That is only the community-1 wespeaker model, the same embedding space as the diarization centroids, cached per day by merged.wav mtime. The embeddings go into the transcript's `line_prints`, and each person gets one weighted-mean voiceprint per day with `label='lines'`. `process_day` carries `line_prints` over and calls `restore_line_prints` after `assign()`, so a re-transcribe keeps them.
 - **Stage 2** `POST /api/days/{date}/voice-similar {person}` → `similar_lines`: lines of the day scoring `LINE_MATCH_THRESHOLD` (0.45) or more against the person, and at least `LINE_MATCH_MARGIN` (0.2) above their current speaker. Lines scoring 0.6 or more come pre-ticked. Ticked lines move through `replaceLines`; moved suggestions are not trained on.
