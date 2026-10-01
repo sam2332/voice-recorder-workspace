@@ -1,0 +1,7 @@
+*.pyc
+__pycache__/
+*.wav
+*.json
+*.mp3
+*.db
+*.log
