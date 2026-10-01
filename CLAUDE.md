@@ -108,6 +108,18 @@ A 2.5-hour day takes about 4 minutes to diarize on the RTX 5060 Ti.
 - **Transcribe step:** each clip is transcribed separately with `SENSITIVITY[level]` written into `whisper_model._vad_params`, and timestamps are shifted onto the day timeline. `whisper_model.tokenizer` is reset per day; otherwise whisperx silently reuses the first day's language.
 - **`analyze_clip()`:** measures speech level (95th-percentile 50 ms RMS), noise floor (10th percentile), peak and clipping, where clipping means runs of 3 or more samples at ≥0.98 of full scale in the *original* file. It returns `issues`, a `suggested` fix and a 1000-bucket waveform (peaks/RMS). Results are cached per file version.
 - **Thresholds:** `QUIET_SPEECH_DB = -32`, `NOISY_FLOOR_DB = -38`, `CLIPPED_PCT = 0.05`. They were calibrated on the user's real recordings: speech −14 to −22 dBFS, floor −44 to −69 dBFS, no clipping. On a −25 dB test copy, the suggested +19 dB with High sensitivity transcribed *more* than the untouched clip did at Normal.
+- **Auto-adjust:** `auto_levels(analysis)` is measure-based only; nothing is test-transcribed.
+  - Volume brings speech to −18 dBFS, but only outside the −24..−8 dead zone.
+  - Sensitivity: High at SNR ≥ 30, Low below 18.
+  - Gate: floor + 3 dB, only when the floor after gain is above −45.
+  - Rustle: Maximum at ≥ 10% rustle, Strong at ≥ 2%, otherwise Gentle.
+  - Declip whenever the clip is clipped.
+
+  It returns `problems`, and `confident` means there are none. The worker calls `flagged_clips(autofix=True)`, which saves confident fixes as `{…, auto: true, reviewed: true}` and only blocks on the rest (the user's choice: "don't pause if it fixed it"). In the UI, the Auto-adjust button is the only way to apply rules otherwise.
+- **Rustle Maximum:** strength `RUSTLE_MAXIMUM` = 2.0. Detection triggers at high band > 1.0× voice band (instead of 1.5×), the target ratio is 0.1, cuts go up to 45 dB, the 1–2.5 kHz band gets the full cut, and frames that are rustle with no voice (`v < 0.25·h`) are ducked by `RUSTLE_DUCK` (−20 dB) in every band. Measured on a raw 51-minute recording:
+  - rustle-only stretches −14.9 dB (Strong: −9.6 dB);
+  - speech under rustle loses ≤ 1 dB of voice band;
+  - none of 475 clean lines was hurt by more than 3 dB.
 - **Blocking:** in `Processor._run`, a day with unreviewed `flagged_clips()` sets `processor.blocked` and the thread waits on `processor.unblock`, which `POST /api/blocked {continue|skip}` sets. The day is re-queued at the front, so the whole queue stops (the user's choice). `jobs.blocked` makes the viewer open the dialog in blocked mode on any page. That mode can't be dismissed with Esc.
 - **Routes:** `GET /api/days/{date}/clips` (analysis plus levels per clip), `POST /api/levels {levels, reviewed}`, `GET /api/clips/{name}/preview?start&gain_db&gate_db&rustle&declip` (10 s WAV through the real chain, speechnorm and rustle).
 

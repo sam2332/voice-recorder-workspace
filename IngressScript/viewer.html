@@ -371,6 +371,8 @@
   .ctl-val { color: var(--text); font-variant-numeric: tabular-nums; font-weight: 600; }
   .ctl input[type=range] { width: 100%; accent-color: var(--accent); }
   .ctl select { padding: 5px 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface); }
+  .sect-row { display: flex; align-items: center; gap: 10px; }
+  .sect-row .btn { margin-left: auto; text-transform: none; letter-spacing: 0; }
   .wave-key { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12px; color: var(--muted); margin: -2px 0 10px; }
   .wave-key i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
   .k-orig { background: var(--border); } .k-after { background: var(--accent); } .k-clip { background: var(--danger); }
@@ -609,7 +611,8 @@
         <label><input type="radio" name="count-mode" value="min"> At least <input type="number" id="count-min" min="1" max="30" value="2"> people</label>
       </div>
     </div>
-    <h4 class="sect">Recordings <span class="muted" id="clips-summary" style="font-weight:400"></span></h4>
+    <h4 class="sect sect-row">Recordings <span class="muted" id="clips-summary" style="font-weight:400"></span>
+      <button type="button" class="btn small" id="auto-all" title="Set every recording's levels from its measurements">Auto-adjust all</button></h4>
     <div class="wave-key"><span><i class="k-orig"></i>original</span><span><i class="k-after"></i>with your settings</span><span><i class="k-clip"></i>clipping</span><span><i class="k-fix"></i>repaired</span><span><i class="k-gate"></i>silenced by gate</span><span>Click a waveform to listen</span></div>
     <div class="clips" id="clips-list"></div>
     <div class="note" id="process-note"></div>
@@ -1025,8 +1028,8 @@
     const l2 = el('label', 'row-l'); const t2 = el('div');
     t2.append(el('div', null, 'Language'), el('div', 'hint', 'Choosing it avoids mistakes when a day starts with noise.'));
     l2.append(t2, lang);
-    const rustle = el('select'); [['1', 'Strong (recommended)'], ['0.5', 'Gentle'], ['0', 'Off']].forEach(([v, n]) => { const o = el('option', null, n); o.value = v; rustle.append(o); });
-    rustle.value = String(s.rustle_strength ?? 1) === '1' ? '1' : String(s.rustle_strength);
+    const rustle = el('select'); [['2', 'Maximum (also quiets rustle-only moments)'], ['1', 'Strong (recommended)'], ['0.5', 'Gentle'], ['0', 'Off']].forEach(([v, n]) => { const o = el('option', null, n); o.value = v; rustle.append(o); });
+    rustle.value = String(+(s.rustle_strength ?? 1));
     const l3 = el('label', 'row-l'); const t3 = el('div');
     t3.append(el('div', null, 'Clothing-rustle cleanup'), el('div', 'hint', 'Turns down the scratchy sound of the mic rubbing on clothes. Voices are left alone.'));
     l3.append(t3, rustle);
@@ -1873,7 +1876,8 @@
 
   // ---------- Transcribe dialog: speaker count + per-recording levels with waveforms ----------
   const SENS_LABELS = { 1: 'Lowest', 2: 'Low', 3: 'Normal', 4: 'High', 5: 'Highest' };
-  const RUSTLE_OPTS = [['', 'Default'], ['1', 'Strong'], ['0.5', 'Gentle'], ['0', 'Off']];
+  const RUSTLE_OPTS = [['', 'Default'], ['2', 'Maximum'], ['1', 'Strong'], ['0.5', 'Gentle'], ['0', 'Off']];
+  const rustleName = v => v >= 2 ? 'Maximum' : v >= 1 ? 'Strong' : v > 0 ? 'Gentle' : 'Off';
   const GATE_OFF = -80;  // slider at the far left = no gate
   const dbToLin = d => Math.pow(10, d / 20);
   const preview = new Audio();
@@ -1951,14 +1955,19 @@
   function clipRow(clip, defaultRustle) {
     const lv = clip.levels || {};
     clip.edit = { gain_db: lv.gain_db ?? 0, sensitivity: lv.sensitivity ?? 3, rustle: lv.rustle ?? null,
-      gate_db: lv.gate_db ?? null, declip: !!lv.declip };
+      gate_db: lv.gate_db ?? null, declip: !!lv.declip, auto: !!lv.auto };
     const row = el('div', 'clip' + (clip.issues?.length ? ' flagged' : ''));
     const head = el('div', 'clip-head');
     head.append(el('b', null, clock(clip.recorded_at) || clip.name), el('span', 'muted', fmt(clip.duration)));
     (clip.issues || []).forEach(i => head.append(el('span', 'chip ' + (i.code === 'clipping' ? 'failed' : 'pending'), i.label)));
-    const fix = el('button', 'btn small', 'Apply suggested fix');
+    const autoChip = el('span', 'chip new', 'Auto-adjusted');
+    autoChip.title = 'These levels were set automatically from the recording’s measurements';
+    autoChip.classList.toggle('hidden', !clip.edit.auto);
+    head.append(autoChip);
+    const fix = el('button', 'btn small', 'Auto-adjust');
     fix.type = 'button';
-    if (clip.suggested && Object.keys(clip.suggested).length) head.append(fix);
+    fix.title = clip.auto ? `Measured: ${clip.auto.notes.join(', ')}` : '';
+    if (clip.auto) head.append(fix);
     row.append(head);
     (clip.issues || []).forEach(i => row.append(el('div', 'clip-issue', i.detail)));
 
@@ -1969,13 +1978,14 @@
     row.append(cv);
 
     const ctrls = el('div', 'clip-ctrls');
+    const manual = () => { clip.edit.auto = false; autoChip.classList.add('hidden'); };   // the user took over
     const slider = (label, min, max, step, value, fmtv, onchange, tip) => {
       const w = el('label', 'ctl'); w.title = tip;
       const top = el('span', 'ctl-top'); const val = el('span', 'ctl-val');
       top.append(el('span', null, label), val);
       const inp = el('input'); inp.type = 'range'; inp.min = min; inp.max = max; inp.step = step; inp.value = value;
       const upd = () => { val.textContent = fmtv(+inp.value); onchange(+inp.value); drawWave(clip); };
-      inp.oninput = upd; val.textContent = fmtv(+inp.value);
+      inp.oninput = () => { upd(); manual(); }; val.textContent = fmtv(+inp.value);
       w.append(top, inp);
       return { w, inp, upd };
     };
@@ -1988,27 +1998,35 @@
     const rw = el('label', 'ctl'); rw.title = 'Turns down the scratchy sound of the mic rubbing on clothes';
     const rtop = el('span', 'ctl-top'); rtop.append(el('span', null, 'Rustle cleanup'));
     const rs = el('select');
-    RUSTLE_OPTS.forEach(([v, n]) => { const o = el('option', null, v === '' ? `Default (${defaultRustle >= 1 ? 'Strong' : defaultRustle > 0 ? 'Gentle' : 'Off'})` : n); o.value = v; rs.append(o); });
-    rs.value = clip.edit.rustle === null ? '' : String(clip.edit.rustle);
-    rs.onchange = () => { clip.edit.rustle = rs.value === '' ? null : +rs.value; };
+    RUSTLE_OPTS.forEach(([v, n]) => { const o = el('option', null, v === '' ? `Default (${rustleName(defaultRustle)})` : n); o.value = v; rs.append(o); });
+    rs.value = clip.edit.rustle === null ? '' : String(+clip.edit.rustle);
+    rs.onchange = () => { clip.edit.rustle = rs.value === '' ? null : +rs.value; manual(); };
     rw.append(rtop, rs);
     ctrls.append(gain.w, sens.w, gate.w, rw);
     const dc = el('label', 'ctl check');
     const dci = el('input'); dci.type = 'checkbox'; dci.checked = clip.edit.declip;
-    dci.onchange = () => { clip.edit.declip = dci.checked; drawWave(clip); };
+    dci.onchange = () => { clip.edit.declip = dci.checked; drawWave(clip); manual(); };
     dc.append(dci, el('span', null, 'Repair clipping'));
     dc.title = 'Rebuilds peaks that were cut off because the recording was too loud';
     if (clip.issues?.some(i => i.code === 'clipping') || clip.edit.declip) ctrls.append(dc);
     row.append(ctrls);
 
-    fix.onclick = () => {
-      const s = clip.suggested;
-      if (s.gain_db !== undefined) { gain.inp.value = s.gain_db; gain.upd(); }
-      if (s.sensitivity !== undefined) { sens.inp.value = s.sensitivity; sens.upd(); }
-      if (s.gate_db !== undefined) { gate.inp.value = s.gate_db; gate.upd(); }
-      if (s.declip !== undefined) { dci.checked = s.declip; dci.onchange(); }
-      toast('Suggested levels applied. Click the waveform to listen.');
+    // Auto-adjust: best-guess levels from the recording's measurements
+    clip.autoAdjust = (quiet = false) => {
+      const s = clip.auto.levels;
+      gain.inp.value = s.gain_db; gain.upd();
+      sens.inp.value = s.sensitivity; sens.upd();
+      gate.inp.value = s.gate_db ?? GATE_OFF; gate.upd();
+      rs.value = s.rustle === null ? '' : String(+s.rustle); clip.edit.rustle = s.rustle;
+      dci.checked = s.declip; clip.edit.declip = s.declip;
+      if (s.declip && !dc.isConnected) ctrls.append(dc);
+      drawWave(clip);
+      clip.edit.auto = true; autoChip.classList.remove('hidden');
+      if (!quiet) toast(clip.auto.problems.length
+        ? `Adjusted, but ${clip.auto.problems.join('; ')}. Listen before continuing.`
+        : `Auto-adjusted: ${clip.auto.notes.join(', ')}. Click the waveform to listen.`);
     };
+    fix.onclick = () => clip.autoAdjust();
     return row;
   }
 
@@ -2023,6 +2041,13 @@
     $('clips-summary').textContent = `${plural(clips.length, 'recording')}` + (flagged ? ` · ${flagged} need${flagged === 1 ? 's' : ''} attention` : '');
     list.replaceChildren(...clips.map(c => clipRow(c, r.default_rustle)));
     requestAnimationFrame(() => clips.forEach(drawWave));
+    $('auto-all').onclick = () => {
+      const auto = clips.filter(c => c.auto);
+      auto.forEach(c => c.autoAdjust(true));
+      const hard = auto.filter(c => c.auto.problems.length);
+      toast(hard.length ? `Adjusted ${plural(auto.length, 'recording')}; ${hard.length} still need${hard.length === 1 ? 's' : ''} a listen`
+        : `Adjusted ${plural(auto.length, 'recording')}. Click a waveform to listen.`);
+    };
     return clips;
   }
 

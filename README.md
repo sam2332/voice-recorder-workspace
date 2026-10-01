@@ -70,10 +70,19 @@ Each recording has its own controls:
 - **Volume:** boost or lower it.
 - **Speech sensitivity:** how quiet a voice can be and still get transcribed.
 - **Noise gate:** silence everything below the dashed line.
-- **Rustle cleanup:** for this recording only.
+- **Rustle cleanup:** for this recording only. Choose Off, Gentle, Strong or **Maximum**. Maximum also catches lighter rustle, cuts it harder, and turns the whole sound down during rustle with no speech in it; a quiet word said while rustling can get swallowed.
 - **Repair clipping:** shown when a recording is clipped.
 
-**Unusual recordings pause everything.** If a recording is very quiet, clipped or noisy, and you haven't looked at it yet, the whole transcription queue stops. The dialog pops up on whatever page you're on, showing that recording with a suggested fix. Choose **Continue with these levels**, **Use as is** or **Skip this day**. This happens with auto-transcribe and **Transcribe all** too.
+**Auto-adjust** (per recording, or **Auto-adjust all**) sets every control from the recording's measurements:
+- volume, to bring quiet speech up to normal without clipping;
+- sensitivity, from how far the speech sits above the background;
+- a noise gate, if the background is clearly audible;
+- rustle strength, from how much of the recording is rustle;
+- repair clipping, if it's clipped.
+
+Hover the button to see what was measured. Recordings set this way show an **Auto-adjusted** tag until you change something.
+
+**Unusual recordings pause everything** unless auto-adjust can confidently fix them. A quiet recording that can be boosted cleanly is fixed automatically and transcription carries on. If a recording is very quiet, clipped or noisy, you haven't looked at it yet, and auto-adjust can't confidently fix it (for example, heavy clipping), the whole transcription queue stops. The dialog pops up on whatever page you're on, showing that recording with a suggested fix. Choose **Continue with these levels**, **Use as is** or **Skip this day**. This happens with auto-transcribe and **Transcribe all** too.
 
 - **Library (left):** every day found in the recordings folder.
   - Days being transcribed show a live percentage, and a progress pill in the header follows the current job from any page.

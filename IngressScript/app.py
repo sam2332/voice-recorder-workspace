@@ -56,6 +56,9 @@ SAMPLE_RATE = 16000
 # Clothing rustle (mic rubbing on a shirt): loud scratchy hiss above ~2.5 kHz. 0 turns it off.
 RUSTLE_STRENGTH = float(os.getenv("RUSTLE_STRENGTH", "1.0"))
 RUSTLE_MAX_CUT_DB = 30             # The most the scratchy band is ever turned down
+RUSTLE_MAXIMUM = 2.0               # strength value of the "Maximum" level (0 off, 0.5 gentle, 1 strong)
+RUSTLE_MAX_CUT_DB_MAXIMUM = 45     # ...which cuts harder
+RUSTLE_DUCK = 0.1                  # ...and turns rustle-only moments down this much (-20 dB), voice band too
 RUSTLE_MIN_DB = 20                 # Quieter frames than this are left alone
 RUSTLE_HOP = 256                   # Rustle map resolution (samples at 16 kHz = 16 ms)
 # Things Whisper "hears" in pure noise. Lines like these that sit in rustle get flagged as noise.
@@ -108,7 +111,7 @@ def save_settings(patch: dict) -> dict:
             if key in patch and patch[key] is not None:
                 data[key] = kind(patch[key])
         data["language"] = data["language"].strip().lower()[:8]
-        data["rustle_strength"] = min(max(data["rustle_strength"], 0.0), 1.0)
+        data["rustle_strength"] = min(max(data["rustle_strength"], 0.0), RUSTLE_MAXIMUM)
         SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
         tmp = SETTINGS_PATH.with_suffix(".tmp")
         tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
@@ -352,7 +355,7 @@ def prepare_daily_audio(date_str: str, file_list: list[Path]) -> Path:
     mask_path = rustle_mask_path(date_str)
     # Rebuilt when the recordings, their levels, or the rustle setting change
     strength = setting("rustle_strength")
-    levels = {f.name: {k: v for k, v in clip_levels(f.name).items() if k != "reviewed"} for f in file_list}
+    levels = {f.name: {k: v for k, v in clip_levels(f.name).items() if k not in ("reviewed", "auto")} for f in file_list}
     names = {"files": [[f.name, f.stat().st_size] for f in file_list], "rustle": strength, "levels": levels}
     if merged_path.exists() and manifest.exists() and mask_path.exists():
         try:
@@ -401,6 +404,9 @@ def suppress_rustle(x: np.ndarray, sr: int = SAMPLE_RATE, strength: float = RUST
     band swamps the voice band for longer than a syllable (so 's' sounds are left alone), the high
     band is pulled down to a speech-like level and 1-2.5 kHz gets half that cut. The voice band is
     never touched, so speech under the rustle survives.
+    strength >= RUSTLE_MAXIMUM ("Maximum") also catches lighter rustle, cuts harder (both upper bands,
+    up to RUSTLE_MAX_CUT_DB_MAXIMUM) and turns the whole sound down during rustle with no speech in it,
+    at the risk of swallowing a quiet word said while rustling.
     Returns (cleaned audio, rustle mask with one bool per RUSTLE_HOP samples)."""
     n, hop = 2 * RUSTLE_HOP, RUSTLE_HOP
     n_hops = (len(x) + hop - 1) // hop
@@ -411,7 +417,8 @@ def suppress_rustle(x: np.ndarray, sr: int = SAMPLE_RATE, strength: float = RUST
     voice_b = (freqs >= 100) & (freqs < 1000)
     mid_b = (freqs >= 1000) & (freqs < 2500)
     high_b = freqs >= 2500
-    floor = 10 ** (-RUSTLE_MAX_CUT_DB / 20)
+    maximum = strength >= RUSTLE_MAXIMUM
+    floor = 10 ** (-(RUSTLE_MAX_CUT_DB_MAXIMUM if maximum else RUSTLE_MAX_CUT_DB) / 20)
 
     pad = np.concatenate([np.zeros(n, np.float32), x.astype(np.float32), np.zeros(n + hop, np.float32)])
     total = (len(pad) - n) // hop + 1
@@ -420,14 +427,20 @@ def suppress_rustle(x: np.ndarray, sr: int = SAMPLE_RATE, strength: float = RUST
     P = (X.real ** 2 + X.imag ** 2) + 1e-12
     v = P[:, voice_b].sum(1)
     h = P[:, high_b].sum(1)
-    rustle = (h > 1.5 * v) & (10 * np.log10(P.sum(1)) > RUSTLE_MIN_DB)
+    rustle = (h > (1.0 if maximum else 1.5) * v) & (10 * np.log10(P.sum(1)) > RUSTLE_MIN_DB)
     # Must persist ~240 ms: 's'/'sh' sounds are shorter than that, rustle bursts are longer
     rustle = np.convolve(rustle.astype(np.float32), np.ones(15) / 15, mode="same") > 0.5
     if strength > 0:
-        g_high = np.where(rustle, np.clip(np.sqrt(0.3 * v / h), floor, 1.0), 1.0) ** strength
+        target = 0.1 if maximum else 0.3                 # high band vs voice band that speech normally has
+        g_high = np.where(rustle, np.clip(np.sqrt(target * v / h), floor, 1.0), 1.0) ** min(strength, 1.0)
         g_high = np.convolve(g_high, np.ones(5) / 5, mode="same").astype(np.float32)  # no pumping/clicks
         X[:, high_b] *= g_high[:, None]
-        X[:, mid_b] *= np.sqrt(g_high)[:, None]
+        X[:, mid_b] *= (g_high if maximum else np.sqrt(g_high))[:, None]
+        if maximum:
+            # Rustle with no voice under it: turn everything down, voice band included
+            voiceless = rustle & (v < 0.25 * h)
+            g_all = np.convolve(np.where(voiceless, RUSTLE_DUCK, 1.0), np.ones(5) / 5, mode="same").astype(np.float32)
+            X *= g_all[:, None]
     y = np.fft.irfft(X, n=n, axis=1).astype(np.float32) * win
     out = np.zeros(len(pad), np.float32)          # overlap-add; hop is exactly half a frame
     out[:total * hop] += y[:, :hop].reshape(-1)
@@ -510,7 +523,8 @@ def load_levels() -> dict[str, dict]:
 
 def clip_levels(name: str) -> dict:
     """Levels for one recording: saved ones, else defaults (rustle None = the global setting)."""
-    lv = {"gain_db": 0.0, "sensitivity": 3, "rustle": None, "gate_db": None, "declip": False, "reviewed": False}
+    lv = {"gain_db": 0.0, "sensitivity": 3, "rustle": None, "gate_db": None, "declip": False, "reviewed": False,
+          "auto": False}
     lv.update(load_levels().get(name, {}))
     return lv
 
@@ -522,13 +536,16 @@ def save_levels(updates: dict[str, dict], reviewed: bool = True) -> dict[str, di
             if not FILE_PATTERN.match(name):
                 continue
             cur = clip_levels(name)
+            rustle = lv.get("rustle", cur["rustle"])
+            gate = lv.get("gate_db", cur["gate_db"])
             cur.update({
                 "gain_db": float(min(max(float(lv.get("gain_db", cur["gain_db"])), -24), 36)),
                 "sensitivity": int(min(max(int(lv.get("sensitivity", cur["sensitivity"])), 1), 5)),
-                "rustle": None if lv.get("rustle", cur["rustle"]) is None else float(min(max(float(lv["rustle"]), 0), 1)),
-                "gate_db": None if lv.get("gate_db", cur["gate_db"]) is None else float(min(max(float(lv["gate_db"]), -80), -15)),
+                "rustle": None if rustle is None else float(min(max(float(rustle), 0), RUSTLE_MAXIMUM)),
+                "gate_db": None if gate is None else float(min(max(float(gate), -80), -15)),
                 "declip": bool(lv.get("declip", cur["declip"])),
                 "reviewed": reviewed or cur["reviewed"],
+                "auto": bool(lv.get("auto", False)),   # set by auto-adjust; cleared when the user edits
             })
             data[name] = cur
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -595,30 +612,87 @@ def analyze_clip(path: Path) -> dict:
     peaks = np.round(xb.max(1), 4).tolist()
     rmsb = np.round(np.sqrt((xb ** 2).mean(1)), 4).tolist()
 
-    issues, fix = [], {}
+    # How much of the recording is clothing rustle (Strong-level detection), in 10-minute pieces
+    piece = SAMPLE_RATE * 600
+    masks = [suppress_rustle(x[i:i + piece], SAMPLE_RATE, 0)[1] for i in range(0, len(x), piece)]
+    rustle_pct = float(np.concatenate(masks).mean() * 100) if masks else 0.0
+
+    issues = []
     if clipped_pct > CLIPPED_PCT:
         issues.append({"code": "clipping", "label": "Clipping",
                        "detail": f"{clipped_pct:.2f}% of the audio is cut off at full volume. Repair clipping can rebuild the peaks."})
-        fix.update(declip=True)
     if speech < QUIET_SPEECH_DB:
-        gain = round(min(-20 - speech, -peak - 1, 30))
         issues.append({"code": "quiet", "label": "Very quiet",
-                       "detail": f"Speech peaks around {speech:.0f} dBFS (normal is about -15 to -22). Boosting by {gain:+d} dB brings it up."})
-        fix.update(gain_db=float(max(gain, 0)), sensitivity=4)
+                       "detail": f"Speech peaks around {speech:.0f} dBFS (normal is about -15 to -22)."})
     if floor > NOISY_FLOOR_DB and speech - floor < 15:
         issues.append({"code": "noisy", "label": "Noisy",
-                       "detail": f"Background noise sits at {floor:.0f} dBFS, close to the speech ({speech:.0f} dBFS). A noise gate can quiet the gaps."})
-        fix.update(gate_db=float(round(floor + 3)))
+                       "detail": f"Background noise sits at {floor:.0f} dBFS, close to the speech ({speech:.0f} dBFS)."})
     result = {"name": path.name, "duration": round(len(x) / SAMPLE_RATE, 2), "peak_db": round(peak, 1),
               "speech_db": round(speech, 1), "floor_db": round(floor, 1), "clipped_pct": round(clipped_pct, 3),
-              "issues": issues, "suggested": fix, "peaks": peaks, "rms": rmsb}
+              "rustle_pct": round(rustle_pct, 1), "issues": issues, "peaks": peaks, "rms": rmsb}
+    result["auto"] = auto_levels(result)
     _analysis_cache[key] = result
     return result
 
 
-def flagged_clips(files: list[Path]) -> list[str]:
-    """Recordings with problems that the user hasn't looked at yet."""
-    return [f.name for f in files if not clip_levels(f.name)["reviewed"] and analyze_clip(f)["issues"]]
+def auto_levels(a: dict) -> dict:
+    """Best-guess levels from the measurements (no test transcription). Returns
+    {"levels", "notes", "confident"}: confident = it should fix every problem the clip was flagged for."""
+    speech, floor, peak, clipped = a["speech_db"], a["floor_db"], a["peak_db"], a["clipped_pct"]
+    snr = speech - floor
+    lv = {"gain_db": 0.0, "sensitivity": 3, "rustle": None, "gate_db": None, "declip": False}
+    notes, problems = [], []
+    if clipped > CLIPPED_PCT:
+        lv["declip"] = True
+        notes.append("repair clipping")
+        if clipped > 1.0:
+            problems.append("too heavily clipped to fully repair")
+    # Volume: bring the loud parts of speech to about -18 dBFS, without pushing peaks past -1 dBFS.
+    # Recordings already in the normal range (-24..-8) are left alone; normalisation evens those out.
+    gain = 0.0 if -24 <= speech <= -8 else -18 - speech
+    if gain > 0 and not lv["declip"]:
+        gain = min(gain, -1 - peak)
+    gain = round(max(-12, min(30, gain)))
+    gain = 0 if abs(gain) < 3 else gain
+    lv["gain_db"] = float(gain)
+    if gain:
+        notes.append(f"volume {gain:+d} dB")
+    if speech + gain < QUIET_SPEECH_DB + 6:
+        problems.append("can't be made loud enough without clipping")
+    # Sensitivity: clean recordings can listen harder for quiet voices; noisy ones should listen less
+    lv["sensitivity"] = 4 if snr >= 30 else 3 if snr >= 18 else 2
+    if lv["sensitivity"] != 3:
+        notes.append(f"sensitivity {'High' if lv['sensitivity'] == 4 else 'Low'}")
+    # Noise gate just above the background, but only when the background is clearly audible
+    if floor + gain > -45 and snr >= 10:
+        lv["gate_db"] = float(round(max(-80, min(-20, floor + gain + 3))))
+        notes.append(f"noise gate {lv['gate_db']:.0f} dB")
+    if snr < 10:
+        problems.append("speech is barely louder than the background")
+    # Rustle: by how much of the recording is rustle
+    lv["rustle"] = RUSTLE_MAXIMUM if a["rustle_pct"] >= 10 else 1.0 if a["rustle_pct"] >= 2 else 0.5
+    notes.append(f"rustle {'Maximum' if lv['rustle'] >= RUSTLE_MAXIMUM else 'Strong' if lv['rustle'] >= 1 else 'Gentle'}"
+                 f" ({a['rustle_pct']:.0f}% rustle)")
+    return {"levels": lv, "notes": notes, "problems": problems, "confident": not problems}
+
+
+def flagged_clips(files: list[Path], autofix: bool = False) -> list[str]:
+    """Recordings with problems that the user hasn't looked at yet. With autofix, problems the
+    auto-adjust rules can confidently fix are fixed (and saved) instead of being reported."""
+    flagged = []
+    for f in files:
+        if clip_levels(f.name)["reviewed"]:
+            continue
+        a = analyze_clip(f)
+        if not a["issues"]:
+            continue
+        if autofix and a["auto"]["confident"]:
+            save_levels({f.name: {**a["auto"]["levels"], "auto": True}})
+            log(f"      {f.name}: {', '.join(i['label'].lower() for i in a['issues'])} -> auto-adjusted "
+                f"({', '.join(a['auto']['notes'])})")
+            continue
+        flagged.append(f.name)
+    return flagged
 
 
 def preview_wav(path: Path, start: float, lv: dict, seconds: float = 10.0) -> bytes:
@@ -1360,7 +1434,7 @@ class Processor:
                 # A recording that's very quiet / clipped / noisy and hasn't been looked at stops the whole
                 # queue until the user sets its levels in the viewer (or accepts it as is, or skips the day)
                 self._set(label="Checking audio levels")
-                flagged = flagged_clips(files)
+                flagged = flagged_clips(files, autofix=True)
                 if flagged:
                     log(f"[viewer] {date}: waiting for levels on {', '.join(flagged)}")
                     with self.lock:
