@@ -2014,7 +2014,7 @@
       const b = el('button', 'speaker' + (state.hidden.has(spk) ? ' off' : ''));
       b.title = `${displayName(spk)}: ${fmtDur(talk[spk])} talking. Click to hide/show, double-click to rename everywhere`;
       const dot = el('span', 'dot'); dot.style.background = state.colors[spk];
-Fix      const exact = total ? talk[spk] / total * 100 : 0;
+      const exact = total ? talk[spk] / total * 100 : 0;
       const pct = Math.round(exact);
       const bar = el('span', 'bar'); const fill = el('i');
       fill.style.width = (talk[spk] > 0 ? Math.max(exact, 2) : 0) + '%';   // a little talk still shows a sliver
