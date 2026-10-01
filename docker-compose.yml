@@ -1,0 +1,41 @@
+# Starts the viewer at http://localhost:5000 straight away; new or incomplete days in RECORD
+# are transcribed in the background and their progress shows on the page.
+#
+#   docker compose up -d --build      # start (first build downloads ~8 GB of CUDA/PyTorch)
+#   docker compose logs -f            # watch what it's doing
+#   docker compose down               # stop
+#
+# Settings come from .env (HF_TOKEN is required; see .env.example).
+
+services:
+  recorder:
+    build: .
+    image: voice-recorder-transcripts
+    container_name: voice-recorder
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Paths inside the container; the folders are mounted below
+      RECORD_DIR: /data/RECORD
+      OUTPUT_DIR: /data/state/processed_daily
+      SPEAKER_DB: /data/state/speaker_memory.db
+    ports:
+      # Only reachable from this computer. Use "5000:5000" to allow other devices on your network.
+      - "127.0.0.1:${PORT:-5000}:5000"
+    volumes:
+      # Your recordings (read-only). Point RECORD_PATH at the recorder itself, e.g. RECORD_PATH=E:/RECORD
+      - ${RECORD_PATH:-./RECORD}:/data/RECORD:ro
+      # Transcripts, merged audio and the voice database: the same files a local `python app.py` uses
+      - ./IngressScript:/data/state
+      # Downloaded models (several GB), kept between restarts
+      - models:/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  models:

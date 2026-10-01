@@ -1,0 +1,19 @@
+# Python 3.12. Also requires ffmpeg on PATH (winget install Gyan.FFmpeg).
+#
+# CUDA 12.8 PyTorch wheels (NVIDIA GPU). pip picks the +cu128 build because it sorts
+# above the plain PyPI build. For CPU-only machines, delete this line.
+--extra-index-url https://download.pytorch.org/whl/cu128
+
+# whisperx 3.8.x requires torch ~=2.8.0 and pyannote.audio 4.x
+torch==2.8.0
+torchaudio==2.8.0
+torchvision==0.23.0
+whisperx==3.8.6
+pyannote.audio==4.0.7
+
+numpy>=2.1
+python-dotenv>=1.0
+
+# Built-in viewer (python app.py --serve)
+fastapi>=0.115
+uvicorn>=0.30

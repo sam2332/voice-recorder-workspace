@@ -1,86 +1,1522 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <title>Daily Meeting Playback & Transcript</title>
-  <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #121212; color: #e0e0e0; margin: 0; padding: 20px; }
-    .container { max-width: 900px; margin: 0 auto; display: flex; flex-direction: column; height: 90vh; }
-    .player-dock { background: #1e1e1e; padding: 16px; border-radius: 8px; position: sticky; top: 0; z-index: 10; box-shadow: 0 4px 12px rgba(0,0,0,0.5); }
-    audio { width: 100%; outline: none; margin-top: 10px; }
-    .transcript-box { flex: 1; overflow-y: auto; margin-top: 20px; padding-right: 10px; }
-    .cue { padding: 12px 16px; margin-bottom: 8px; border-radius: 6px; background: #181818; cursor: pointer; transition: all 0.2s ease; border-left: 4px solid transparent; }
-    .cue:hover { background: #262626; }
-    .cue.active { background: #2b384e; border-left: 4px solid #4ea8de; transform: scale(1.01); }
-    .speaker-tag { font-weight: bold; font-size: 0.85em; color: #4ea8de; margin-bottom: 4px; text-transform: uppercase; }
-    .timestamp { font-size: 0.75em; color: #888; float: right; }
-    .text { font-size: 1.05em; line-height: 1.4; color: #eee; }
-  </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Recorder Playback</title>
+<style>
+  :root {
+    --bg: #f6f6f4; --surface: #ffffff; --surface-2: #f0efec; --border: #e2e0db;
+    --text: #1d1d1b; --muted: #6b6a66; --accent: #3b6fe0; --accent-soft: #e6edfc;
+    --ok: #2a9d6f; --warn: #c97b18; --danger: #d9534f; --danger-soft: #fbeaea;
+    --mark: #ffe58a; --shadow: 0 1px 2px rgba(0,0,0,.05), 0 6px 20px rgba(0,0,0,.08);
+    --played: rgba(0,0,0,.18); --header-h: 60px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #121212; --surface: #1b1b1b; --surface-2: #242424; --border: #2e2e2e;
+      --text: #ececea; --muted: #9a9994; --accent: #6f9bff; --accent-soft: #1f2a42;
+      --ok: #4cc08f; --warn: #e0a04a; --danger: #ef7470; --danger-soft: #3a1f1f;
+      --mark: #6b5a12; --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.4);
+      --played: rgba(255,255,255,.18);
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 "Segoe UI", -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
+  }
+  button, input, select { font: inherit; color: inherit; }
+  button { cursor: pointer; }
+  button:disabled { cursor: default; opacity: .4; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .hidden { display: none !important; }
+  body.server .file-only, body:not(.server) .server-only { display: none !important; }
+  code { background: var(--surface-2); padding: 1px 6px; border-radius: 4px; font-size: .92em; }
+
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 8px 16px;
+    border-radius: 10px; border: 1px solid var(--border); background: var(--surface);
+    transition: background .15s, border-color .15s; white-space: nowrap;
+  }
+  .btn:hover:not(:disabled) { background: var(--surface-2); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn.primary:hover:not(:disabled) { background: var(--accent); filter: brightness(1.08); }
+  .btn.small { padding: 4px 10px; font-size: 13px; border-radius: 8px; }
+  .btn svg { width: 18px; height: 18px; }
+  .icon-btn {
+    width: 36px; height: 36px; display: inline-grid; place-items: center; flex: none;
+    border-radius: 10px; border: 1px solid transparent; background: transparent;
+  }
+  .icon-btn:hover:not(:disabled) { background: var(--surface-2); }
+  .icon-btn svg { width: 20px; height: 20px; }
+  .muted { color: var(--muted); }
+
+  /* ---------- Empty state ---------- */
+  .empty { min-height: 100%; display: grid; place-items: center; padding: 24px; }
+  .drop {
+    width: min(560px, 100%); text-align: center; padding: 48px 32px;
+    background: var(--surface); border: 2px dashed var(--border); border-radius: 20px;
+    box-shadow: var(--shadow); transition: border-color .15s, background .15s;
+  }
+  body.server .drop { border-style: solid; }
+  .drop.over { border-color: var(--accent); background: var(--accent-soft); }
+  .drop h1 { margin: 12px 0 6px; font-size: 22px; }
+  .drop p { margin: 0 0 24px; color: var(--muted); }
+  .drop .icon { width: 56px; height: 56px; color: var(--accent); }
+  .drop .actions { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+  .drop .hint { margin-top: 20px; font-size: 13px; color: var(--muted); }
+
+  /* ---------- App layout ---------- */
+  .app { display: flex; flex-direction: column; height: 100%; }
+  header {
+    height: var(--header-h); flex: none; display: flex; align-items: center; gap: 6px; padding: 0 12px 0 16px;
+    border-bottom: 1px solid var(--border); background: var(--surface); position: relative; z-index: 40;
+  }
+  .brand { display: flex; align-items: center; gap: 8px; width: 256px; flex: none; font-weight: 600; font-size: 15px; }
+  .brand svg { width: 22px; height: 22px; color: var(--accent); }
+  .day-nav { display: flex; gap: 2px; }
+  .titles { min-width: 0; display: flex; flex-direction: column; line-height: 1.25; margin-left: 6px; }
+  .titles h1 { font-size: 16px; margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .titles .sub { color: var(--muted); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .spacer { flex: 1; }
+  .job-pill {
+    display: inline-flex; align-items: center; gap: 8px; max-width: 340px; padding: 5px 12px 5px 10px; margin-right: 6px;
+    border-radius: 999px; border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+    background: var(--accent-soft); color: var(--accent); font-size: 13px; font-weight: 600; white-space: nowrap;
+  }
+  .job-pill .txt { overflow: hidden; text-overflow: ellipsis; }
+  .job-pill .ring { width: 18px; height: 18px; flex: none; transform: rotate(-90deg); }
+  .job-pill .ring circle { fill: none; stroke-width: 3; }
+  .job-pill .ring .bg { stroke: color-mix(in srgb, var(--accent) 25%, transparent); }
+  .job-pill .ring .fg { stroke: var(--accent); stroke-linecap: round; transition: stroke-dashoffset .5s; }
+  .job-pill.indeterminate .ring { animation: spin 1.2s linear infinite; }
+  @keyframes spin { to { transform: rotate(270deg); } }
+  @media (max-width: 899px) { .job-pill .txt { display: none; } .job-pill { padding: 5px; margin: 0; } }
+
+  main { flex: 1; display: grid; grid-template-columns: 280px minmax(0, 1fr) 280px; min-height: 0; }
+  .panel { background: var(--surface); overflow-y: auto; min-height: 0; }
+  #library { border-right: 1px solid var(--border); display: flex; flex-direction: column; }
+  #details { border-left: 1px solid var(--border); padding: 20px; }
+  .panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
+  .panel section + section { margin-top: 26px; }
+  .scrim { position: fixed; inset: var(--header-h) 0 0 0; background: rgba(0,0,0,.35); z-index: 25; }
+
+  /* ---------- Library ---------- */
+  .lib-head { padding: 16px 16px 8px; display: flex; align-items: center; gap: 8px; position: sticky; top: 0; background: var(--surface); z-index: 1; }
+  .lib-head h2 { margin: 0; flex: 1; }
+  .lib-actions { padding: 0 16px 8px; }
+  .lib-actions .btn { width: 100%; }
+  .lib-list { padding: 0 8px 16px; }
+  .month { font-size: 12px; font-weight: 600; color: var(--muted); padding: 14px 10px 6px; }
+  .day-card {
+    display: block; width: 100%; text-align: left; border: 1px solid transparent; background: transparent;
+    border-radius: 12px; padding: 10px 12px; margin-bottom: 2px; position: relative;
+  }
+  .day-card:hover { background: var(--surface-2); }
+  .day-card.active { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 35%, transparent); }
+  .day-card .row { display: flex; align-items: center; gap: 8px; }
+  .day-card .dname { font-weight: 600; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .day-card .meta { font-size: 12.5px; color: var(--muted); margin-top: 1px; }
+  .day-card .people { font-size: 12.5px; color: var(--muted); margin-top: 4px; display: flex; align-items: center; gap: 4px; min-width: 0; }
+  .day-card .people span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .dots { display: inline-flex; flex: none; }
+  .dots i { width: 8px; height: 8px; border-radius: 50%; margin-right: -2px; box-shadow: 0 0 0 1.5px var(--surface); }
+  .chip {
+    flex: none; font-size: 11px; font-weight: 600; padding: 1px 8px; border-radius: 999px;
+    background: var(--surface-2); color: var(--muted); white-space: nowrap;
+  }
+  .chip.pending { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); }
+  .chip.processing, .chip.queued { background: var(--accent-soft); color: var(--accent); }
+  .chip.failed { background: var(--danger-soft); color: var(--danger); }
+  .chip.new { background: color-mix(in srgb, var(--ok) 16%, transparent); color: var(--ok); }
+  .bar-mini { height: 4px; border-radius: 2px; background: var(--surface-2); margin-top: 8px; overflow: hidden; }
+  .bar-mini > i { display: block; height: 100%; background: var(--accent); transition: width .4s; }
+  .lib-empty { padding: 24px 16px; color: var(--muted); font-size: 14px; }
+
+  /* ---------- Details ---------- */
+  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .stat { background: var(--surface-2); border-radius: 10px; padding: 10px 12px; min-width: 0; }
+  .stat b { display: block; font-size: 17px; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .stat span { font-size: 12px; color: var(--muted); }
+  .rec {
+    display: grid; grid-template-columns: 28px 1fr auto; align-items: center; gap: 10px; width: 100%;
+    text-align: left; border: 1px solid transparent; background: transparent; border-radius: 10px; padding: 7px 8px;
+  }
+  .rec:hover { background: var(--surface-2); }
+  .rec.active { background: var(--accent-soft); }
+  .rec .num {
+    width: 28px; height: 28px; border-radius: 8px; display: grid; place-items: center; font-size: 12px; font-weight: 600;
+    background: var(--surface-2); color: var(--muted);
+  }
+  .rec.active .num { background: var(--accent); color: #fff; }
+  .rec .num svg { width: 14px; height: 14px; }
+  .rec .when { font-weight: 600; font-size: 14px; }
+  .rec .file { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .rec .len { font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+  .speaker {
+    display: grid; grid-template-columns: 12px 1fr auto; align-items: center; gap: 10px;
+    width: 100%; padding: 8px 10px; border-radius: 10px; border: 1px solid transparent;
+    background: transparent; text-align: left;
+  }
+  .speaker:hover { background: var(--surface-2); }
+  .speaker.off { opacity: .4; }
+  .speaker .dot { width: 12px; height: 12px; border-radius: 50%; }
+  .speaker .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+  .speaker .pct { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+  .speaker .bar { grid-column: 2 / 4; height: 4px; border-radius: 2px; background: var(--surface-2); overflow: hidden; }
+  .speaker .bar > i { display: block; height: 100%; }
+  .note { font-size: 12px; color: var(--muted); margin-top: 8px; }
+
+  /* ---------- Content ---------- */
+  .content { display: flex; flex-direction: column; min-height: 0; min-width: 0; position: relative; }
+  .toolbar { display: flex; gap: 12px; align-items: center; padding: 12px 24px; border-bottom: 1px solid var(--border); }
+  .search {
+    flex: 1; display: flex; align-items: center; gap: 8px; max-width: 520px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 0 10px;
+  }
+  .search:focus-within { border-color: var(--accent); }
+  .search svg { width: 18px; height: 18px; color: var(--muted); flex: none; }
+  .search input { flex: 1; border: 0; background: transparent; padding: 8px 0; outline: none; min-width: 0; }
+  .search .count { font-size: 12px; color: var(--muted); white-space: nowrap; }
+  .toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); user-select: none; cursor: pointer; white-space: nowrap; }
+
+  .banner {
+    margin: 12px 24px 0; padding: 10px 14px; border-radius: 10px; display: flex; align-items: center; gap: 12px;
+    background: color-mix(in srgb, var(--ok) 12%, transparent); font-size: 14px;
+  }
+  .banner span { flex: 1; }
+
+  .transcript { flex: 1; overflow-y: auto; padding: 8px 24px 40px; scroll-padding: 120px; }
+  .transcript-inner { max-width: 780px; margin: 0 auto; }
+  .divider { display: flex; align-items: center; gap: 12px; margin: 26px 0 4px; color: var(--muted); font-size: 12px; font-weight: 600; }
+  .divider::before, .divider::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+  .turn { display: grid; grid-template-columns: 40px 1fr; gap: 12px; padding-top: 14px; }
+  .avatar {
+    width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center;
+    color: #fff; font-weight: 600; font-size: 14px; margin-top: 2px;
+  }
+  .turn-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 2px; }
+  .turn-head .who { font-weight: 600; }
+  .turn-head .when { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .cue {
+    display: block; width: 100%; text-align: left; border: 0; background: transparent;
+    padding: 4px 10px; margin-left: -10px; border-radius: 8px; line-height: 1.6; transition: background .12s;
+  }
+  .cue:hover { background: var(--surface-2); }
+  .cue.active { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); }
+  mark { background: var(--mark); color: inherit; border-radius: 3px; padding: 0 1px; }
+  mark.current { outline: 2px solid var(--accent); }
+  .no-results { text-align: center; color: var(--muted); padding: 60px 0; }
+  .jump { position: absolute; left: 50%; transform: translateX(-50%); bottom: 112px; z-index: 5; box-shadow: var(--shadow); border-radius: 999px; }
+
+  /* ---------- Not-yet-transcribed view ---------- */
+  .pending-view { flex: 1; overflow-y: auto; padding: 32px 24px; }
+  .pending-inner { max-width: 560px; margin: 0 auto; }
+  .pending-card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 28px; text-align: center; box-shadow: var(--shadow); }
+  .pending-card .icon { width: 44px; height: 44px; color: var(--warn); }
+  .pending-card.processing .icon, .pending-card.queued .icon { color: var(--accent); }
+  .pending-card.failed .icon { color: var(--danger); }
+  .pending-card h2 { margin: 10px 0 4px; font-size: 19px; }
+  .pending-card p { margin: 0; color: var(--muted); }
+  .pending-card .actions { margin-top: 18px; display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+  .progress { margin-top: 18px; text-align: left; }
+  .progress .bar { height: 8px; border-radius: 4px; background: var(--surface-2); overflow: hidden; }
+  .progress .bar > i { display: block; height: 100%; background: var(--accent); transition: width .5s; }
+  .progress .bar.indeterminate > i { width: 30% !important; animation: slide 1.4s ease-in-out infinite; }
+  @keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
+  .progress .lbl { display: flex; justify-content: space-between; font-size: 13px; color: var(--muted); margin-top: 6px; }
+  .error-box { margin-top: 16px; text-align: left; background: var(--danger-soft); color: var(--danger); border-radius: 10px; padding: 10px 12px; font-size: 13.5px; overflow-wrap: anywhere; }
+  .pending-view h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 28px 0 8px; }
+
+  /* ---------- Player ---------- */
+  .player { border-top: 1px solid var(--border); background: var(--surface); padding: 8px 24px 12px; }
+  .timeline { position: relative; height: 28px; cursor: pointer; touch-action: none; }
+  .timeline .track { position: absolute; left: 0; right: 0; top: 10px; height: 8px; border-radius: 4px; background: var(--surface-2); overflow: hidden; }
+  .timeline .seg { position: absolute; top: 0; height: 100%; opacity: .55; }
+  .timeline .played { position: absolute; left: 0; top: 0; height: 100%; background: var(--played); pointer-events: none; }
+  .timeline .tick { position: absolute; top: 5px; width: 2px; height: 18px; margin-left: -1px; background: var(--muted); opacity: .6; border-radius: 1px; pointer-events: none; }
+  .timeline .knob {
+    position: absolute; top: 6px; width: 16px; height: 16px; margin-left: -8px; border-radius: 50%;
+    background: var(--accent); box-shadow: 0 0 0 3px var(--surface); pointer-events: none;
+  }
+  .timeline .tip {
+    position: absolute; bottom: 30px; transform: translateX(-50%); padding: 3px 8px; border-radius: 6px;
+    background: var(--text); color: var(--bg); font-size: 12px; white-space: nowrap; pointer-events: none; font-variant-numeric: tabular-nums;
+  }
+  .controls { display: flex; align-items: center; gap: 6px; margin-top: 2px; }
+  .controls .time { font-variant-numeric: tabular-nums; font-size: 13px; color: var(--muted); min-width: 130px; }
+  .controls .now { flex: 1; text-align: center; font-size: 13px; color: var(--muted); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .play { width: 46px; height: 46px; border-radius: 50%; border: 0; background: var(--accent); color: #fff; display: grid; place-items: center; flex: none; }
+  .play:hover:not(:disabled) { filter: brightness(1.08); }
+  .play svg { width: 22px; height: 22px; }
+  .rate { min-width: 52px; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; padding: 6px 8px; }
+  .vol { width: 90px; accent-color: var(--accent); }
+
+  /* ---------- Dialogs / toast ---------- */
+  dialog {
+    border: 1px solid var(--border); border-radius: 16px; background: var(--surface); color: var(--text);
+    padding: 24px; width: min(440px, calc(100% - 32px)); box-shadow: var(--shadow);
+  }
+  dialog::backdrop { background: rgba(0,0,0,.4); }
+  dialog h3 { margin: 0 0 14px; }
+  dialog .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 18px; }
+  dialog input[type=text] { width: 100%; padding: 9px 12px; border-radius: 10px; border: 1px solid var(--border); background: var(--bg); }
+  .choice { display: grid; gap: 10px; }
+  .choice label { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+  .choice input[type=number] { width: 56px; padding: 4px 6px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); }
+  .keys { display: grid; grid-template-columns: auto 1fr; gap: 8px 16px; font-size: 14px; }
+  kbd {
+    display: inline-block; min-width: 24px; text-align: center; padding: 1px 6px; border-radius: 6px;
+    border: 1px solid var(--border); border-bottom-width: 2px; background: var(--bg); font: 12px/1.6 ui-monospace, Consolas, monospace;
+  }
+  .toast {
+    position: fixed; left: 50%; bottom: 120px; transform: translate(-50%, 20px); opacity: 0;
+    background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 10px;
+    transition: opacity .2s, transform .2s; pointer-events: none; z-index: 100; max-width: calc(100% - 32px);
+  }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+  /* ---------- Responsive ---------- */
+  #library-toggle, #details-toggle { display: none; }
+  .drawer { transition: transform .22s ease; }
+  @media (max-width: 1279px) {
+    main { grid-template-columns: 280px minmax(0, 1fr); }
+    #details-toggle { display: inline-grid; }
+    #details {
+      position: fixed; top: var(--header-h); bottom: 0; right: 0; width: min(320px, 88vw); z-index: 30;
+      transform: translateX(105%); box-shadow: var(--shadow); border-left: 1px solid var(--border);
+    }
+    #details.open { transform: none; }
+  }
+  @media (max-width: 899px) {
+    main { grid-template-columns: minmax(0, 1fr); }
+    #library-toggle { display: inline-grid; }
+    .brand { display: none; }
+    #library {
+      position: fixed; top: var(--header-h); bottom: 0; left: 0; width: min(320px, 88vw); z-index: 30;
+      transform: translateX(-105%); box-shadow: var(--shadow);
+    }
+    #library.open { transform: none; }
+    .vol, .controls .now, #help-btn { display: none; }
+    .transcript, .toolbar, .player, .pending-view { padding-left: 16px; padding-right: 16px; }
+    .banner { margin-left: 16px; margin-right: 16px; }
+    .controls .time { min-width: 0; flex: 1; }
+    header { padding: 0 8px; gap: 2px; }
+    .titles h1 { font-size: 15px; }
+    .toggle { font-size: 0; gap: 0; }
+    .toggle::after { content: "Follow"; font-size: 13px; margin-left: 6px; }
+  }
+  @media (max-width: 420px) { .day-nav { display: none; } }
+</style>
 </head>
 <body>
-<div class="container">
-  <div class="player-dock">
-    <div style="display:flex; justify-content:space-between; align-items:center;">
-      <h3 id="session-title" style="margin:0;">Meeting Log</h3>
-      <input type="file" id="file-picker" accept=".json">
+
+<!-- Empty / start state -->
+<div class="empty" id="empty">
+  <div class="drop" id="drop">
+    <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v5M8 22h8"/></svg>
+    <h1 id="empty-title">Recorder Playback</h1>
+    <p id="empty-text">Open your <code>processed_daily</code> folder to listen along with the transcript.</p>
+    <div class="actions file-only">
+      <button class="btn primary" id="open-folder">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+        Open folder
+      </button>
+      <button class="btn" id="open-files">Choose files…</button>
     </div>
-    <audio id="audio-player" controls></audio>
+    <div class="hint file-only">Or drag the folder / a transcript <code>.json</code> + its <code>.wav</code> here.<br>Tip: run <code>python app.py --serve</code> to skip this step.</div>
   </div>
-  <div class="transcript-box" id="transcript"></div>
 </div>
 
+<!-- Main app -->
+<div class="app hidden" id="app">
+  <header>
+    <button class="icon-btn" id="library-toggle" aria-label="Show library" title="Library">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+    </button>
+    <div class="brand">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v5M8 22h8"/></svg>
+      Recorder Playback
+    </div>
+    <div class="day-nav">
+      <button class="icon-btn" id="prev-day" title="Previous day (Shift+←)" aria-label="Previous day">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+      </button>
+      <button class="icon-btn" id="next-day" title="Next day (Shift+→)" aria-label="Next day">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+      </button>
+    </div>
+    <div class="titles">
+      <h1 id="title">Recording</h1>
+      <span class="sub" id="subtitle"></span>
+    </div>
+    <span class="spacer"></span>
+    <button class="job-pill hidden" id="job-pill" title="Open the day being transcribed">
+      <svg class="ring" viewBox="0 0 20 20"><circle class="bg" cx="10" cy="10" r="8"/><circle class="fg" id="job-ring" cx="10" cy="10" r="8" stroke-dasharray="50.27" stroke-dashoffset="50.27"/></svg>
+      <span class="txt" id="job-text"></span>
+    </button>
+    <button class="icon-btn" id="export-btn" title="Download transcript (.txt)" aria-label="Download transcript">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0-4-4m4 4 4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+    </button>
+    <button class="icon-btn" id="help-btn" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M8 14h8"/></svg>
+    </button>
+    <button class="icon-btn file-only" id="close-btn" title="Open another folder" aria-label="Open another folder">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+    </button>
+    <button class="icon-btn" id="details-toggle" title="Day details" aria-label="Show day details">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+    </button>
+  </header>
+
+  <main>
+    <!-- Library of days -->
+    <aside class="panel drawer" id="library" aria-label="Library">
+      <div class="lib-head">
+        <h2>Library</h2>
+        <span class="muted" style="font-size:12px" id="lib-count"></span>
+        <button class="icon-btn server-only" id="refresh-btn" title="Check for new recordings" aria-label="Refresh library" style="width:30px;height:30px">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>
+        </button>
+      </div>
+      <div class="lib-actions server-only hidden" id="lib-actions">
+        <button class="btn small" id="process-all"></button>
+      </div>
+      <div class="lib-list" id="lib-list"></div>
+    </aside>
+
+    <!-- Transcript / pending -->
+    <div class="content">
+      <div class="toolbar" id="toolbar">
+        <label class="search">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          <input type="search" id="search" placeholder="Search this day  ( / )" autocomplete="off">
+          <span class="count" id="search-count"></span>
+        </label>
+        <label class="toggle"><input type="checkbox" id="follow" checked> Follow audio</label>
+      </div>
+      <div class="banner hidden" id="banner">
+        <span id="banner-text"></span>
+        <button class="btn small primary server-only" id="banner-btn">Re-transcribe</button>
+      </div>
+      <div class="transcript" id="transcript"><div class="transcript-inner" id="transcript-inner"></div></div>
+      <div class="pending-view hidden" id="pending"><div class="pending-inner" id="pending-inner"></div></div>
+      <button class="btn jump hidden" id="jump">↓ Back to current line</button>
+
+      <div class="player">
+        <div class="timeline" id="timeline" role="slider" tabindex="0" aria-label="Seek" aria-valuemin="0">
+          <div class="track"><div id="segs"></div><div class="played" id="played"></div></div>
+          <div id="ticks"></div>
+          <div class="knob" id="knob"></div>
+          <div class="tip hidden" id="tip"></div>
+        </div>
+        <div class="controls">
+          <span class="time" id="time">0:00 / 0:00</span>
+          <span class="now" id="now"></span>
+          <button class="icon-btn" id="back" title="Back 10s (←)" aria-label="Back 10 seconds">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><text x="12" y="15.5" font-size="7" text-anchor="middle" fill="currentColor" stroke="none" font-weight="700">10</text></svg>
+          </button>
+          <button class="play" id="play" aria-label="Play">
+            <svg id="play-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13a1 1 0 0 0 1.5.9l10.4-6.5a1 1 0 0 0 0-1.8L9.5 4.6A1 1 0 0 0 8 5.5z"/></svg>
+          </button>
+          <button class="icon-btn" id="fwd" title="Forward 10s (→)" aria-label="Forward 10 seconds">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/><text x="12" y="15.5" font-size="7" text-anchor="middle" fill="currentColor" stroke="none" font-weight="700">10</text></svg>
+          </button>
+          <button class="btn rate" id="rate" title="Playback speed ([ / ])">1×</button>
+          <input class="vol" id="vol" type="range" min="0" max="1" step="0.05" value="1" aria-label="Volume">
+        </div>
+      </div>
+    </div>
+
+    <!-- Day details -->
+    <aside class="panel drawer" id="details" aria-label="Day details">
+      <section>
+        <h2>Overview</h2>
+        <div class="stats" id="stats"></div>
+      </section>
+      <section id="rec-section">
+        <h2>Recordings</h2>
+        <div id="recordings"></div>
+      </section>
+      <section id="spk-section">
+        <h2>Speakers</h2>
+        <div id="speakers"></div>
+        <div class="note">Click to show/hide · double-click to rename.<br>Same person listed twice? Rename one to the other's name to merge them.</div>
+      </section>
+      <section class="server-only" id="redo-section">
+        <h2>Speaker detection</h2>
+        <button class="btn small" id="redo-btn" style="width:100%">Re-transcribe this day…</button>
+        <div class="note" id="redo-note">Wrong number of people? Tell it how many were talking and run it again.</div>
+      </section>
+    </aside>
+  </main>
+  <div class="scrim hidden" id="scrim"></div>
+</div>
+
+<audio id="audio" preload="metadata"></audio>
+<input type="file" id="folder-input" webkitdirectory multiple hidden>
+<input type="file" id="files-input" accept=".json,audio/*,.wav,.mp3" multiple hidden>
+
+<dialog id="rename-dlg">
+  <form method="dialog">
+    <h3>Rename speaker</h3>
+    <input type="text" id="rename-input" required>
+    <div class="note file-only">Applies to this viewer only. To rename permanently run:<br><code id="rename-cmd"></code></div>
+    <div class="note server-only">Saved to the voice database, so this name is used for every past day and future recordings.</div>
+    <div class="row">
+      <button class="btn" value="cancel" formnovalidate>Cancel</button>
+      <button class="btn primary" value="ok">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="process-dlg">
+  <form method="dialog">
+    <h3 id="process-title">Transcribe this day</h3>
+    <p class="muted" style="margin:0 0 14px">How many people were talking? A count makes speaker detection much more reliable.</p>
+    <div class="choice">
+      <label><input type="radio" name="count-mode" value="auto" checked> Work it out automatically</label>
+      <label><input type="radio" name="count-mode" value="exact"> Exactly <input type="number" id="count-exact" min="1" max="30" value="2"> people</label>
+      <label><input type="radio" name="count-mode" value="min"> At least <input type="number" id="count-min" min="1" max="30" value="2"> people</label>
+    </div>
+    <div class="note" id="process-note"></div>
+    <div class="row">
+      <button class="btn" value="cancel" formnovalidate>Cancel</button>
+      <button class="btn primary" value="ok" id="process-go">Start</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="merge-dlg">
+  <form method="dialog">
+    <h3>Same person?</h3>
+    <p class="muted" style="margin:0" id="merge-text"></p>
+    <div class="row">
+      <button class="btn" value="cancel">Cancel</button>
+      <button class="btn primary" value="ok">Merge</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="audio-dlg">
+  <h3>Audio file needed</h3>
+  <p style="margin:0;color:var(--muted)">Pick <code id="audio-name"></code> to listen along. You can still read the transcript without it.</p>
+  <div class="row">
+    <button class="btn" id="audio-skip">Read only</button>
+    <button class="btn primary" id="audio-pick">Choose audio…</button>
+  </div>
+  <input type="file" id="audio-input" accept="audio/*,.wav,.mp3" hidden>
+</dialog>
+
+<dialog id="help-dlg">
+  <h3>Keyboard shortcuts</h3>
+  <div class="keys">
+    <span><kbd>Space</kbd> / <kbd>K</kbd></span><span>Play / pause</span>
+    <span><kbd>←</kbd> <kbd>→</kbd></span><span>Back / forward 10s</span>
+    <span><kbd>J</kbd> <kbd>L</kbd></span><span>Previous / next line</span>
+    <span><kbd>Shift</kbd>+<kbd>←</kbd> <kbd>→</kbd></span><span>Previous / next day</span>
+    <span><kbd>[</kbd> <kbd>]</kbd></span><span>Slower / faster</span>
+    <span><kbd>/</kbd></span><span>Search this day</span>
+    <span><kbd>Enter</kbd> / <kbd>Shift+Enter</kbd></span><span>Next / previous match</span>
+    <span><kbd>Esc</kbd></span><span>Clear search / close panels</span>
+    <span><kbd>F</kbd></span><span>Toggle follow audio</span>
+  </div>
+  <form method="dialog" class="row"><button class="btn primary">Got it</button></form>
+</dialog>
+
+<div class="toast" id="toast"></div>
+
 <script>
-  const audio = document.getElementById('audio-player');
-  const transcriptDiv = document.getElementById('transcript');
-  let cues = [];
+(() => {
+  const $ = id => document.getElementById(id);
+  const audio = $('audio');
+  const PALETTE = ['#3b6fe0', '#d9534f', '#2a9d6f', '#c97b18', '#8e5bd6', '#d6488f', '#1f9bb3', '#7a8a1f', '#a0522d', '#5865a8'];
+  const RATES = [0.75, 1, 1.25, 1.5, 1.75, 2, 2.5];
+  const ICONS = {
+    clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+    spin: '<path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/>',
+    alert: '<circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/>',
+    play: '<path d="M8 5.5v13a1 1 0 0 0 1.5.9l10.4-6.5a1 1 0 0 0 0-1.8L9.5 4.6A1 1 0 0 0 8 5.5z"/>',
+    pause: '<rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/>',
+  };
 
-  document.getElementById('file-picker').addEventListener('change', function(e) {
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const data = JSON.parse(event.target.result);
-      document.getElementById('session-title').innerText = `Log: ${data.date}`;
-      audio.src = data.audio;
-      cues = data.segments;
-      renderTranscript(cues);
-    };
-    reader.readAsText(e.target.files[0]);
-  });
+  const state = {
+    server: false,
+    library: [],       // [{date, status, duration, recordings, speakers, first_time, last_time, new_recordings, job}]
+    files: {},         // file mode: date -> { data, audio: File|null }
+    date: null, data: null,
+    segments: [], sources: [],
+    renames: {}, hidden: new Set(), colors: {},
+    activeIdx: -1, activeSrc: -1, rawIdx: -1,
+    matches: [], matchIdx: -1,
+    audioUrl: null, duration: 0, userScrolledAt: 0,
+    openToken: 0, pollTimer: null,
+  };
 
-  function formatTime(sec) {
-    const m = Math.floor(sec / 60).toString().padStart(2, '0');
-    const s = Math.floor(sec % 60).toString().padStart(2, '0');
-    return `${m}:${s}`;
+  // ---------- Utilities ----------
+  const fmt = s => {
+    if (!isFinite(s)) s = 0;
+    s = Math.max(0, Math.floor(s));
+    const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), sec = s % 60;
+    return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + String(sec).padStart(2, '0');
+  };
+  const fmtDur = s => {
+    if (!s || !isFinite(s)) return '–';
+    if (s < 60) return `${Math.round(s)}s`;
+    const h = Math.floor(s / 3600), m = Math.round(s % 3600 / 60);
+    return h ? `${h}h ${String(m).padStart(2, '0')}m` : `${m}m`;
+  };
+  const toDate = d => new Date(d + 'T00:00:00');
+  const longDate = d => isNaN(toDate(d)) ? d : toDate(d).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+  const shortDate = d => isNaN(toDate(d)) ? d : toDate(d).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+  const monthName = d => isNaN(toDate(d)) ? '' : toDate(d).toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+  const clockFmt = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' });
+  const clock = (hms, plus = 0) => {
+    if (!hms) return null;
+    const [h, m, s] = hms.split(':').map(Number);
+    return clockFmt.format(new Date(2000, 0, 1, h, m, s + Math.floor(plus)));
+  };
+  const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+  const el = (tag, cls, text) => {
+    const n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text != null) n.textContent = text;
+    return n;
+  };
+  const svg = (paths, cls) => {
+    const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    s.setAttribute('viewBox', '0 0 24 24'); s.setAttribute('fill', 'none'); s.setAttribute('stroke', 'currentColor');
+    s.setAttribute('stroke-width', '2'); s.setAttribute('stroke-linecap', 'round'); s.setAttribute('stroke-linejoin', 'round');
+    if (cls) s.setAttribute('class', cls);
+    s.innerHTML = paths;
+    return s;
+  };
+  const displayName = spk => state.renames[spk] || String(spk).replace(/_/g, ' ');
+  const initials = name => name.split(/\s+/).filter(Boolean).map(w => /^\d+$/.test(w) ? w : w[0]).join('').slice(0, 2).toUpperCase();
+  let toastTimer;
+  const toast = msg => {
+    const t = $('toast'); t.textContent = msg; t.classList.add('show');
+    clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 2800);
+  };
+  const store = {
+    get(k, d) { try { const v = localStorage.getItem('recplay:' + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
+    set(k, v) { try { localStorage.setItem('recplay:' + k, JSON.stringify(v)); } catch {} },
+  };
+  async function api(path, opts) {
+    const r = await fetch(path, opts);
+    if (!r.ok) {
+      let msg = r.statusText;
+      try { msg = (await r.json()).detail || msg; } catch {}
+      throw Object.assign(new Error(msg), { status: r.status });
+    }
+    return r.json();
+  }
+  const libItem = date => state.library.find(d => d.date === date);
+  const isReady = () => state.data && state.data.status !== 'pending';
+  const fromName = name => { const m = /^V\d{4}-\d{2}-\d{2}-(\d{2})-(\d{2})-(\d{2})/i.exec(name || ''); return m ? `${m[1]}:${m[2]}:${m[3]}` : null; };
+  const sourcesTimed = () => state.sources.length && state.sources.every(s => typeof s.start === 'number');
+  function srcIndexAt(t) {
+    if (!sourcesTimed()) return -1;
+    let i = -1;
+    for (let k = 0; k < state.sources.length; k++) if (state.sources[k].start <= t + 0.01) i = k;
+    return i;
+  }
+  function clockAt(t) {
+    const i = srcIndexAt(t);
+    return i < 0 ? null : clock(state.sources[i].recorded_at, t - state.sources[i].start);
   }
 
-  function renderTranscript(items) {
-    transcriptDiv.innerHTML = '';
-    items.forEach((item, idx) => {
-      const el = document.createElement('div');
-      el.className = 'cue';
-      el.id = `cue-${idx}`;
-      el.innerHTML = `
-        <span class="speaker-tag">${item.speaker}</span>
-        <span class="timestamp">${formatTime(item.start)} - ${formatTime(item.end)}</span>
-        <div class="text">${item.text}</div>
-      `;
-      el.onclick = () => { audio.currentTime = item.start; audio.play(); };
-      transcriptDiv.appendChild(el);
-    });
-  }
+  // ---------- Library ----------
+  function renderLibrary() {
+    const list = $('lib-list');
+    const scroll = $('library').scrollTop;
+    const frag = document.createDocumentFragment();
+    let month = null;
+    for (const d of state.library) {
+      const m = monthName(d.date);
+      if (m !== month) { frag.append(el('div', 'month', m)); month = m; }
+      const card = el('button', 'day-card' + (d.date === state.date ? ' active' : ''));
+      card.dataset.date = d.date;
+      const row = el('div', 'row');
+      row.append(el('span', 'dname', shortDate(d.date)));
+      const job = d.job;
+      if (job?.status === 'processing') row.append(el('span', 'chip processing', `${Math.round((job.progress || 0) * 100)}%`));
+      else if (job?.status === 'queued') row.append(el('span', 'chip queued', 'Queued'));
+      else if (job?.status === 'failed') row.append(el('span', 'chip failed', 'Failed'));
+      else if (d.status === 'pending') row.append(el('span', 'chip pending', 'Not transcribed'));
+      else if (d.new_recordings) row.append(el('span', 'chip new', `+${d.new_recordings} new`));
+      card.append(row);
 
-  audio.addEventListener('timeupdate', () => {
-    const cur = audio.currentTime;
-    cues.forEach((c, idx) => {
-      const el = document.getElementById(`cue-${idx}`);
-      if (cur >= c.start && cur <= c.end) {
-        if (!el.classList.contains('active')) {
-          document.querySelectorAll('.cue.active').forEach(node => node.classList.remove('active'));
-          el.classList.add('active');
-          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        }
+      const bits = [fmtDur(d.duration)];
+      if (d.recordings) bits.push(plural(d.recordings, 'recording'));
+      if (d.first_time) bits.push(d.first_time === d.last_time ? clock(d.first_time) : `${clock(d.first_time)}–${clock(d.last_time)}`);
+      card.append(el('div', 'meta', job?.status === 'processing' ? job.label + '…' : bits.join(' · ')));
+
+      if (job?.status === 'processing') {
+        const bar = el('div', 'bar-mini'); const fill = el('i'); fill.style.width = `${(job.progress || 0) * 100}%`; bar.append(fill); card.append(bar);
+      } else if (d.speakers?.length) {
+        const people = el('div', 'people');
+        const dots = el('span', 'dots');
+        d.speakers.slice(0, 4).forEach((s, i) => { const dot = el('i'); dot.style.background = PALETTE[i % PALETTE.length]; dots.append(dot); });
+        const names = d.speakers.slice(0, 3).map(displayName).join(', ') + (d.speakers.length > 3 ? ` +${d.speakers.length - 3}` : '');
+        people.append(dots, el('span', null, names));
+        card.append(people);
       }
+      frag.append(card);
+    }
+    if (!state.library.length) frag.append(el('div', 'lib-empty', 'No recordings yet.'));
+    list.replaceChildren(frag);
+    $('library').scrollTop = scroll;
+
+    const ready = state.library.filter(d => d.status === 'ready').length;
+    $('lib-count').textContent = state.library.length ? `${ready}/${state.library.length} transcribed` : '';
+    const todo = state.library.filter(d => d.status === 'pending' && !d.job);
+    $('lib-actions').classList.toggle('hidden', todo.length < 2);
+    $('process-all').textContent = `Transcribe all ${todo.length} days`;
+  }
+
+  // Header indicator: what's being transcribed right now, visible from any day
+  function renderJobPill() {
+    const pill = $('job-pill'), j = state.jobs || {};
+    const cur = j.current, waiting = (j.queued || []).length;
+    pill.classList.toggle('hidden', !cur && !waiting);
+    if (!cur && !waiting) return;
+    const pct = cur?.progress || 0;
+    pill.classList.toggle('indeterminate', !cur || !pct);
+    $('job-ring').setAttribute('stroke-dashoffset', String(50.27 * (1 - (cur && pct ? pct : 0.25))));
+    $('job-text').textContent = cur
+      ? `Transcribing ${shortDate(cur.date)} · ${pct ? Math.round(pct * 100) + '%' : cur.label}` + (waiting ? ` · ${waiting} waiting` : '')
+      : `${plural(waiting, 'day')} waiting`;
+    pill.title = cur ? `${cur.label}… (click to open ${shortDate(cur.date)})` : 'Waiting to start';
+    pill.dataset.date = cur?.date || j.queued[0];
+  }
+
+  function updateNav() {
+    const i = state.library.findIndex(d => d.date === state.date);
+    // Library is newest first, so "previous" (older) is further down the list
+    $('prev-day').disabled = i < 0 || i >= state.library.length - 1;
+    $('next-day').disabled = i <= 0;
+  }
+  function stepDay(dir) {
+    const i = state.library.findIndex(d => d.date === state.date);
+    const target = state.library[i + (dir < 0 ? 1 : -1)];
+    if (target) go(target.date);
+  }
+  function go(date) {
+    if (location.hash.slice(1) !== date) location.hash = date;  // hashchange opens it
+    else openDay(date);
+  }
+
+  async function refreshLibrary(quiet = true) {
+    if (!state.server) return;
+    let r;
+    try { r = await api('/api/library'); }
+    catch (e) { if (!quiet) toast(`Couldn't reach the server: ${e.message}`); schedulePoll(15000); return; }
+    const prev = Object.fromEntries(state.library.map(d => [d.date, d]));
+    state.library = r.days;
+    state.recordDir = r.record_dir;
+    state.jobs = r.jobs;
+    renderJobPill();
+
+    if (!state.library.length) { showEmptyServer(); schedulePoll(10000); return; }
+    if ($('app').classList.contains('hidden')) { showApp(); schedulePoll(r.busy ? 2500 : 20000); return; }
+
+    renderLibrary(); updateNav();
+    for (const d of state.library) {
+      const was = prev[d.date];
+      const finished = d.status === 'ready' && !d.job && (was?.status === 'pending' || (was?.job && was.job.status !== 'failed'));
+      if (finished) {
+        if (d.date === state.date) { await openDay(d.date, { reload: true }); toast('Transcript ready'); }
+        else toast(`${shortDate(d.date)} is ready`);
+      }
+      if (was && was.job?.status !== 'failed' && d.job?.status === 'failed') toast(`Transcribing ${shortDate(d.date)} failed`);
+    }
+    const cur = libItem(state.date);
+    if (cur && !isReady()) renderPending();
+    if (cur && isReady()) renderBanner();
+    if (!quiet) toast(`Library up to date · ${plural(state.library.length, 'day')}`);
+    schedulePoll(r.busy ? 2500 : 20000);
+  }
+  function schedulePoll(ms) {
+    clearTimeout(state.pollTimer);
+    state.pollTimer = setTimeout(() => refreshLibrary(), ms);
+  }
+
+  async function transcribe(dates, hint) {
+    try {
+      for (const d of dates) await api(`/api/days/${d}/process`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(hint === undefined ? {} : { hint }),
+      });
+      toast(dates.length > 1 ? `Queued ${plural(dates.length, 'day')}` : 'Transcription started');
+    } catch (e) { toast(e.message); }
+    refreshLibrary();
+  }
+  async function cancel(date) {
+    try { await api(`/api/days/${date}/process`, { method: 'DELETE' }); toast('Removed from queue'); }
+    catch (e) { toast(e.message); }
+    refreshLibrary();
+  }
+
+  // ---------- Opening a day ----------
+  function showApp() {
+    $('empty').classList.add('hidden');
+    $('app').classList.remove('hidden');
+    renderLibrary();
+    const want = location.hash.slice(1);
+    const last = store.get('lastDate');
+    // Prefer the link/last-viewed day, else the newest day that has a transcript
+    const date = [want, last].find(d => d && libItem(d))
+      || (state.library.find(d => d.status === 'ready') || libItem(state.jobs?.current?.date) || state.library[0]).date;
+    history.replaceState(null, '', '#' + date);
+    openDay(date);
+  }
+
+  function showEmptyServer() {
+    $('app').classList.add('hidden');
+    $('empty').classList.remove('hidden');
+    $('empty-title').textContent = 'No recordings found';
+    $('empty-text').replaceChildren('Copy recordings from your voice recorder into ', el('code', null, state.recordDir || 'RECORD'),
+      '. They\'ll show up here automatically.');
+  }
+
+  function normalizeSources(src) {
+    return (src || []).map(s => typeof s === 'string'
+      ? { name: s, start: null, duration: null, recorded_at: fromName(s), url: null }
+      : { ...s, recorded_at: s.recorded_at || fromName(s.name) });
+  }
+
+  async function openDay(date, opts = {}) {
+    if (!libItem(date)) return;
+    const token = ++state.openToken;
+    let data, fileAudio = null;
+    if (state.server) {
+      try { data = await api(`/api/days/${encodeURIComponent(date)}`); }
+      catch (e) { toast(`Couldn't load ${shortDate(date)}: ${e.message}`); return; }
+      if (token !== state.openToken) return;  // the user already picked another day
+    } else {
+      data = state.files[date].data;
+      fileAudio = state.files[date].audio;
+    }
+    const keep = opts.keepPosition && date === state.date;
+    if (!keep) savePosition();
+
+    state.date = date;
+    state.data = data;
+    state.sources = normalizeSources(data.sources);
+    state.segments = (data.segments || [])
+      .filter(s => s && typeof s.start === 'number')
+      .map((s, i) => ({ ...s, i, speaker: s.speaker || 'Unknown', text: String(s.text || '') }));
+    state.renames = state.server ? {} : store.get('renames', {});
+    if (!keep) state.hidden = new Set();
+    state.activeIdx = -1; state.activeSrc = -1;
+    store.set('lastDate', date);
+    closeDrawers();
+
+    state.colors = {};
+    const order = libItem(date)?.speakers || [];
+    [...new Set([...order, ...state.segments.map(s => s.speaker)])].forEach((s, i) => state.colors[s] = PALETTE[i % PALETTE.length]);
+
+    $('title').textContent = longDate(date);
+    document.title = `${shortDate(date)} · Recorder Playback`;
+    renderLibrary(); updateNav();
+
+    const ready = isReady();
+    $('toolbar').classList.toggle('hidden', !ready);
+    $('transcript').classList.toggle('hidden', !ready);
+    $('pending').classList.toggle('hidden', ready);
+    $('export-btn').disabled = !ready;
+    $('spk-section').classList.toggle('hidden', !ready);
+    $('redo-section').classList.toggle('hidden', !ready);
+    $('rec-section').classList.toggle('hidden', !ready || !state.sources.length);
+
+    if (ready) {
+      if (!keep) $('search').value = '';
+      state.duration = (keep && audio.duration) || (state.segments.length ? state.segments[state.segments.length - 1].end : 0);
+      renderSpeakers();
+      renderTranscript();
+      renderBanner();
+      if (!keep) setAudio(state.server ? data.audio_url : fileAudio, { resume: true });
+    } else {
+      $('banner').classList.add('hidden');
+      state.rawIdx = -1;
+      setAudio(null, { quiet: true });
+      state.duration = 0;
+      renderPending();
+      $('pending').scrollTop = 0;
+    }
+    renderRecordings();
+    renderStats();
+    renderTimeline(); updateProgress(); updateNow();
+  }
+
+  function renderStats() {
+    const lib = libItem(state.date) || {};
+    const words = state.segments.reduce((n, s) => n + (s.text.match(/\S+/g) || []).length, 0);
+    const recs = state.sources.length || lib.recordings || 0;
+    const dur = state.duration || lib.duration || state.sources.reduce((n, s) => n + (s.duration || 0), 0);
+    const items = isReady()
+      ? [[fmtDur(dur), 'Length'], [words.toLocaleString(), 'Words'], [recs, plural(recs, 'Recording').replace(/^\d+ /, '')], [Object.keys(state.colors).length, 'Speakers']]
+      : [[fmtDur(dur), 'Audio'], [recs, plural(recs, 'Recording').replace(/^\d+ /, '')]];
+    $('stats').replaceChildren(...items.map(([v, l]) => { const s = el('div', 'stat'); s.append(el('b', null, String(v)), el('span', null, l)); return s; }));
+
+    const bits = [fmtDur(dur)];
+    if (recs) bits.push(plural(recs, 'recording'));
+    if (isReady()) bits.push(plural(Object.keys(state.colors).length, 'speaker'));
+    else bits.push('not transcribed yet');
+    $('subtitle').textContent = bits.join(' · ');
+  }
+
+  function renderBanner() {
+    const lib = libItem(state.date);
+    const n = lib?.new_recordings || 0;
+    const job = lib?.job;
+    const busy = job && job.status !== 'failed';
+    $('banner').classList.toggle('hidden', !n && !job);
+    if (!n && !job) return;
+    const pct = job?.status === 'processing' && job.progress ? ` ${Math.round(job.progress * 100)}%` : '';
+    $('banner-text').textContent = busy
+      ? (job.status === 'queued' ? 'Waiting to re-transcribe this day…' : `Re-transcribing this day… ${job.label}${pct}. The transcript below updates when it's done.`)
+      : job?.status === 'failed' ? `Re-transcribing failed: ${job.error}`
+      : `${plural(n, 'new recording')} from this day ${n === 1 ? "isn't" : "aren't"} in the transcript yet.`;
+    $('banner-btn').classList.toggle('hidden', !!busy);
+    $('banner-btn').textContent = job?.status === 'failed' ? 'Try again' : 'Re-transcribe';
+  }
+
+  // ---------- Not-yet-transcribed view ----------
+  function renderPending() {
+    const lib = libItem(state.date) || {};
+    const job = lib.job;
+    const status = job?.status || 'pending';
+    const card = el('div', 'pending-card ' + status);
+    const titles = { pending: 'Not transcribed yet', queued: 'Waiting in line', processing: 'Transcribing…', failed: 'Transcription failed' };
+    card.append(svg(status === 'failed' ? ICONS.alert : status === 'processing' ? ICONS.spin : ICONS.clock, 'icon'), el('h2', null, titles[status]));
+
+    const dur = state.sources.reduce((n, s) => n + (s.duration || 0), 0) || lib.duration;
+    const bits = [plural(state.sources.length || lib.recordings || 0, 'recording'), fmtDur(dur)];
+    if (lib.first_time) bits.push(lib.first_time === lib.last_time ? clock(lib.first_time) : `${clock(lib.first_time)} – ${clock(lib.last_time)}`);
+    card.append(el('p', null, bits.join(' · ')));
+
+    if (status === 'processing') {
+      const p = el('div', 'progress');
+      const bar = el('div', 'bar' + (job.progress ? '' : ' indeterminate')); const fill = el('i'); fill.style.width = `${job.progress * 100}%`; bar.append(fill);
+      const lbl = el('div', 'lbl'); lbl.append(el('span', null, job.label + '…'), el('span', null, job.progress ? `${Math.round(job.progress * 100)}%` : ''));
+      p.append(bar, lbl);
+      card.append(p, el('p', 'note', 'You can keep browsing other days. This page updates when it finishes.'));
+    } else if (status === 'queued') {
+      card.append(el('p', 'note', `Position ${job.position} in the queue. Days are transcribed one at a time.`));
+    } else if (status === 'failed') {
+      card.append(el('div', 'error-box', job.error));
+    }
+
+    const actions = el('div', 'actions');
+    if (!state.server) {
+      card.append(el('p', 'note', 'Run python app.py to transcribe it.'));
+    } else if (status === 'pending' || status === 'failed') {
+      const b = el('button', 'btn primary', status === 'failed' ? 'Try again' : 'Transcribe this day');
+      b.onclick = () => askTranscribe(status === 'failed' ? 'Try again' : 'Transcribe this day');
+      actions.append(b);
+    } else if (status === 'queued') {
+      const b = el('button', 'btn', 'Remove from queue');
+      b.onclick = () => cancel(state.date);
+      actions.append(b);
+    }
+    if (actions.children.length) card.append(actions);
+
+    const inner = $('pending-inner');
+    const frag = document.createDocumentFragment();
+    frag.append(card);
+    if (state.sources.length) {
+      frag.append(el('h3', null, 'Listen to the raw recordings'));
+      frag.append(recordingList(true));
+    }
+    inner.replaceChildren(frag);
+  }
+
+  // ---------- Recordings list ----------
+  function recordingList(raw) {
+    const box = el('div');
+    state.sources.forEach((s, i) => {
+      const active = raw ? state.rawIdx === i : state.activeSrc === i;
+      const b = el('button', 'rec' + (active ? ' active' : ''));
+      b.dataset.src = i;
+      const num = el('span', 'num');
+      if (raw && active) num.append(svg(audio.paused ? ICONS.play : ICONS.pause)); else num.textContent = i + 1;
+      const mid = el('span');
+      mid.style.minWidth = '0';
+      mid.append(el('div', 'when', clock(s.recorded_at) || `Recording ${i + 1}`), el('div', 'file', s.name));
+      b.append(num, mid, el('span', 'len', s.duration ? fmt(s.duration) : ''));
+      b.title = raw ? 'Play this recording' : 'Jump to this recording';
+      b.onclick = () => {
+        if (raw) playRaw(i);
+        else if (typeof s.start === 'number') { seek(s.start + 0.01, true); closeDrawers(); }
+      };
+      box.append(b);
     });
+    return box;
+  }
+  function renderRecordings() {
+    $('recordings').replaceChildren(recordingList(false));
+  }
+  function updateActiveSource() {
+    if (!isReady()) return;
+    const i = srcIndexAt(audio.currentTime);
+    if (i === state.activeSrc) return;
+    state.activeSrc = i;
+    document.querySelectorAll('#recordings .rec').forEach(b => b.classList.toggle('active', +b.dataset.src === i));
+  }
+  function playRaw(i) {
+    const s = state.sources[i];
+    if (!s?.url) { toast('That recording file is no longer in the RECORD folder.'); return; }
+    if (state.rawIdx === i && audio.src) { togglePlay(); return; }
+    state.rawIdx = i;
+    setAudio(s.url, { quiet: true });
+    audio.play().catch(() => {});
+    renderPending();
+  }
+
+  // ---------- File mode (viewer.html opened from disk) ----------
+  async function ingest(files) {
+    const jsons = files.filter(f => /\.json$/i.test(f.name) && !/\.sources\.json$/i.test(f.name));
+    const audios = files.filter(f => /\.(wav|mp3|m4a|ogg|flac)$/i.test(f.name) || f.type.startsWith('audio/'));
+    if (!jsons.length) { toast('No transcript (.json) found in that selection.'); return; }
+
+    const days = {};
+    for (const f of jsons) {
+      let data;
+      try { data = JSON.parse(await f.text()); } catch { continue; }
+      if (!data || !Array.isArray(data.segments)) continue;
+      const date = data.date || f.name.replace(/_transcript\.json$/i, '').replace(/\.json$/i, '');
+      const wanted = data.audio ? data.audio.split(/[\\/]/).pop().toLowerCase() : null;
+      const match = audios.find(a => a.name.toLowerCase() === wanted)
+        || audios.find(a => a.name.toLowerCase().startsWith(date.toLowerCase()))
+        || (jsons.length === 1 && audios.length === 1 ? audios[0] : null);
+      days[date] = { data: { ...data, status: 'ready' }, audio: match || null };
+    }
+    const dates = Object.keys(days).sort().reverse();
+    if (!dates.length) { toast("Those files don't look like transcripts."); return; }
+
+    state.files = days;
+    state.library = dates.map(date => {
+      const { data } = days[date];
+      const segs = data.segments, talk = {};
+      segs.forEach(s => talk[s.speaker] = (talk[s.speaker] || 0) + (s.end - s.start));
+      const times = normalizeSources(data.sources).map(s => s.recorded_at).filter(Boolean).sort();
+      return {
+        date, status: 'ready', duration: segs.length ? segs[segs.length - 1].end : 0,
+        recordings: (data.sources || []).length, speakers: Object.keys(talk).sort((a, b) => talk[b] - talk[a]),
+        first_time: times[0] || null, last_time: times[times.length - 1] || null, new_recordings: 0,
+      };
+    });
+    showApp();
+  }
+
+  // ---------- Audio ----------
+  // `src` is a File (picked locally) or a URL (server mode)
+  function setAudio(src, { resume = false, quiet = false } = {}) {
+    audio.pause();
+    if (state.audioUrl) URL.revokeObjectURL(state.audioUrl);
+    state.audioUrl = null;
+    audio.removeAttribute('src');
+    audio.load();
+    if (src) {
+      if (typeof src === 'string') audio.src = src;
+      else audio.src = state.audioUrl = URL.createObjectURL(src);
+      const date = state.date;
+      const pos = resume ? store.get('pos:' + date, 0) : 0;
+      audio.addEventListener('loadedmetadata', () => {
+        if (date !== state.date) return;
+        if (pos > 1 && pos < audio.duration - 2) { audio.currentTime = pos; toast(`Resumed at ${clockAt(pos) || fmt(pos)}`); }
+        state.duration = audio.duration || state.duration;
+        renderStats(); renderTimeline(); updateProgress(); updateActiveSource();
+      }, { once: true });
+    } else if (!quiet) {
+      if (state.server) toast('The audio file for this day is missing. Showing the transcript only.');
+      else { $('audio-name').textContent = state.data.audio || `${state.date}_merged.wav`; $('audio-dlg').showModal(); }
+    }
+    updatePlayIcon();
+  }
+
+  function needAudio() {
+    if (audio.src) return false;
+    if (!isReady()) { if (state.sources.length) playRaw(0); return true; }
+    if (state.server) { toast('No audio for this day.'); return true; }
+    $('audio-name').textContent = state.data.audio || `${state.date}_merged.wav`;
+    $('audio-dlg').showModal();
+    return true;
+  }
+  function togglePlay() { if (needAudio()) return; audio.paused ? audio.play() : audio.pause(); }
+  function seek(t, play) {
+    if (needAudio()) return;
+    audio.currentTime = Math.max(0, Math.min(t, (audio.duration || state.duration) - 0.1));
+    state.userScrolledAt = 0;
+    if (play) audio.play();
+    updateProgress(); syncActive(true); updateActiveSource();
+  }
+  function stepLine(dir) {
+    if (!isReady()) return;
+    const t = audio.currentTime;
+    const visible = state.segments.filter(s => !state.hidden.has(s.speaker));
+    const target = dir > 0 ? visible.find(s => s.start > t + 0.05) : [...visible].reverse().find(s => s.start < t - 1);
+    if (target) seek(target.start, !audio.paused);
+  }
+  function setRate(r) {
+    audio.playbackRate = r;
+    $('rate').textContent = (r % 1 ? r : r.toFixed(0)) + '×';
+    store.set('rate', r);
+  }
+  function savePosition() { if (state.date && audio.src && isReady()) store.set('pos:' + state.date, audio.currentTime); }
+
+  // ---------- Transcript rendering ----------
+  function renderSpeakers() {
+    const talk = {};
+    let total = 0;
+    for (const s of state.segments) { const d = Math.max(0, s.end - s.start); talk[s.speaker] = (talk[s.speaker] || 0) + d; total += d; }
+    const list = Object.keys(talk).sort((a, b) => talk[b] - talk[a]);
+    $('speakers').replaceChildren(...list.map(spk => {
+      const b = el('button', 'speaker' + (state.hidden.has(spk) ? ' off' : ''));
+      b.title = `${displayName(spk)}: ${fmtDur(talk[spk])} talking`;
+      const dot = el('span', 'dot'); dot.style.background = state.colors[spk];
+      const pct = total ? Math.round(talk[spk] / total * 100) : 0;
+      const bar = el('span', 'bar'); const fill = el('i'); fill.style.width = pct + '%'; fill.style.background = state.colors[spk]; bar.append(fill);
+      b.append(dot, el('span', 'name', displayName(spk)), el('span', 'pct', pct + '%'), el('span'), bar);
+      let clickTimer;
+      b.onclick = () => {
+        clearTimeout(clickTimer);
+        clickTimer = setTimeout(() => {
+          state.hidden.has(spk) ? state.hidden.delete(spk) : state.hidden.add(spk);
+          if (state.hidden.size === list.length) { state.hidden.clear(); toast('Showing all speakers'); }
+          renderSpeakers(); renderTranscript();
+        }, 220);
+      };
+      b.ondblclick = () => { clearTimeout(clickTimer); rename(spk); };
+      return b;
+    }));
+  }
+
+  function renderTranscript() {
+    const inner = $('transcript-inner');
+    const q = $('search').value.trim();
+    const rx = q ? new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi') : null;
+    const frag = document.createDocumentFragment();
+    const timed = sourcesTimed() && state.sources.length > 1;
+    state.matches = [];
+    let turn = null, lastSpk = null, lastEnd = -1, lastSrc = -1, shown = 0;
+
+    for (const s of state.segments) {
+      if (state.hidden.has(s.speaker) || (rx && !s.text.match(rx))) { lastSpk = null; continue; }
+      shown++;
+      // Mark where each separate recording begins
+      const src = srcIndexAt(s.start);
+      if (timed && src !== lastSrc && src >= 0) {
+        const r = state.sources[src];
+        frag.append(el('div', 'divider', `Recording ${src + 1} · ${clock(r.recorded_at) || fmt(r.start)}`));
+        lastSpk = null;
+      }
+      lastSrc = src;
+      // Start a new turn when the speaker changes or there's a long pause
+      if (s.speaker !== lastSpk || s.start - lastEnd > 30) {
+        turn = el('div', 'turn');
+        const av = el('div', 'avatar', initials(displayName(s.speaker)));
+        av.style.background = state.colors[s.speaker];
+        const body = el('div');
+        const head = el('div', 'turn-head');
+        const when = el('span', 'when', clockAt(s.start) || fmt(s.start));
+        when.title = `${fmt(s.start)} into the day`;
+        head.append(el('span', 'who', displayName(s.speaker)), when);
+        body.append(head);
+        turn.append(av, body);
+        frag.append(turn);
+      }
+      lastSpk = s.speaker; lastEnd = s.end;
+
+      const cue = el('button', 'cue');
+      cue.dataset.i = s.i;
+      cue.title = `${clockAt(s.start) || fmt(s.start)}: click to play from here`;
+      if (rx) {
+        let pos = 0;
+        for (const m of s.text.matchAll(rx)) {
+          cue.append(document.createTextNode(s.text.slice(pos, m.index)));
+          const mk = el('mark', null, m[0]);
+          state.matches.push(mk);
+          cue.append(mk);
+          pos = m.index + m[0].length;
+        }
+        cue.append(document.createTextNode(s.text.slice(pos)));
+      } else {
+        cue.append(document.createTextNode(s.text));
+      }
+      turn.lastChild.append(cue);
+    }
+
+    if (!shown) {
+      frag.append(el('div', 'no-results', state.segments.length
+        ? (q ? `No lines match “${q}” on this day.` : 'All speakers are hidden.')
+        : 'No speech was detected in these recordings.'));
+    }
+    inner.replaceChildren(frag);
+    state.matchIdx = -1;
+    $('search-count').textContent = q ? `${state.matches.length} match${state.matches.length === 1 ? '' : 'es'}` : '';
+    state.activeIdx = -1;
+    syncActive(true);
+  }
+
+  function renderTimeline() {
+    const dur = state.duration || 1;
+    const frag = document.createDocumentFragment();
+    if (isReady()) {
+      for (const s of state.segments) {
+        const d = el('div', 'seg');
+        d.style.left = (s.start / dur * 100) + '%';
+        d.style.width = Math.max(0.1, (s.end - s.start) / dur * 100) + '%';
+        d.style.background = state.colors[s.speaker];
+        frag.append(d);
+      }
+    }
+    $('segs').replaceChildren(frag);
+    const ticks = document.createDocumentFragment();
+    if (isReady() && sourcesTimed()) {
+      state.sources.slice(1).forEach(s => {
+        const t = el('div', 'tick'); t.style.left = (s.start / dur * 100) + '%'; ticks.append(t);
+      });
+    }
+    $('ticks').replaceChildren(ticks);
+    $('timeline').setAttribute('aria-valuemax', Math.round(dur));
+  }
+
+  // ---------- Playback sync ----------
+  function findIdx(t) {
+    // Binary search for the last segment starting at or before t
+    const a = state.segments; let lo = 0, hi = a.length - 1, ans = -1;
+    while (lo <= hi) { const mid = (lo + hi) >> 1; if (a[mid].start <= t) { ans = mid; lo = mid + 1; } else hi = mid - 1; }
+    return ans >= 0 && t <= a[ans].end + 0.75 ? ans : -1;
+  }
+
+  function syncActive(force) {
+    if (!isReady()) return;
+    const idx = findIdx(audio.currentTime);
+    if (idx === state.activeIdx && !force) return;
+    document.querySelectorAll('.cue.active').forEach(n => n.classList.remove('active'));
+    state.activeIdx = idx;
+    updateNow();
+    if (idx < 0) { updateJump(null); return; }
+    const node = document.querySelector(`.cue[data-i="${idx}"]`);
+    if (!node) return;
+    node.classList.add('active');
+    const following = $('follow').checked && Date.now() - state.userScrolledAt > 4000;
+    if (following && !audio.paused) node.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    updateJump(node);
+  }
+
+  function updateNow() {
+    let text = '';
+    if (isReady()) {
+      const seg = state.segments[state.activeIdx];
+      const c = clockAt(audio.currentTime);
+      text = [c, seg && !audio.paused ? `${displayName(seg.speaker)} speaking` : ''].filter(Boolean).join(' · ');
+    } else if (state.rawIdx >= 0) {
+      const s = state.sources[state.rawIdx];
+      text = `Raw recording ${state.rawIdx + 1}` + (s.recorded_at ? ` · ${clock(s.recorded_at, audio.currentTime)}` : '');
+    }
+    $('now').textContent = text;
+  }
+
+  function updateJump(node = document.querySelector('.cue.active')) {
+    const box = $('transcript').getBoundingClientRect();
+    let off = false;
+    if (node && !audio.paused && isReady()) { const r = node.getBoundingClientRect(); off = r.bottom < box.top || r.top > box.bottom; }
+    $('jump').classList.toggle('hidden', !off);
+  }
+
+  function updateProgress() {
+    const dur = (isReady() ? state.duration : audio.duration) || 0, t = audio.currentTime || 0;
+    const pct = dur ? Math.min(100, t / dur * 100) : 0;
+    $('played').style.width = pct + '%';
+    $('knob').style.left = pct + '%';
+    $('time').textContent = `${fmt(t)} / ${fmt(dur)}`;
+    $('timeline').setAttribute('aria-valuenow', Math.round(t));
+    $('timeline').setAttribute('aria-valuetext', fmt(t));
+  }
+
+  function updatePlayIcon() {
+    const playing = !audio.paused;
+    $('play').setAttribute('aria-label', playing ? 'Pause' : 'Play');
+    $('play-icon').innerHTML = playing ? ICONS.pause : ICONS.play;
+    if (!isReady() && state.date) renderPending();
+  }
+
+  // ---------- Search ----------
+  function gotoMatch(dir) {
+    if (!state.matches.length) return;
+    state.matches[state.matchIdx]?.classList.remove('current');
+    state.matchIdx = (state.matchIdx + dir + state.matches.length) % state.matches.length;
+    const m = state.matches[state.matchIdx];
+    m.classList.add('current');
+    m.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    state.userScrolledAt = Date.now();
+    $('search-count').textContent = `${state.matchIdx + 1} of ${state.matches.length}`;
+  }
+
+  // ---------- Rename ----------
+  function rename(spk) {
+    const dlg = $('rename-dlg'), input = $('rename-input');
+    input.value = displayName(spk);
+    const cmd = n => `python app.py --rename ${spk} "${n}"`;
+    $('rename-cmd').textContent = cmd(input.value);
+    input.oninput = () => $('rename-cmd').textContent = cmd(input.value.trim());
+    dlg.onclose = async () => {
+      if (dlg.returnValue !== 'ok') return;
+      const v = input.value.trim();
+      if (!v || v === displayName(spk)) return;
+      if (state.server) {
+        // Permanent: updates the voice DB and every transcript on disk
+        try {
+          // Typing "Speaker 2" means the existing Speaker_2
+          const target = Object.keys(state.colors).find(k => displayName(k).toLowerCase() === v.toLowerCase() && k !== spk) || v;
+          const send = merge => api('/api/speakers/rename', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ old: spk, new: target, merge }),
+          });
+          let r, merged = false;
+          try { r = await send(false); }
+          catch (e) {
+            if (e.status !== 409) throw e;
+            $('merge-text').textContent = `${displayName(target)} already exists. Merge ${displayName(spk)} into ${displayName(target)}? ` +
+              `All of ${displayName(spk)}'s lines on every day become ${displayName(target)}, and their voiceprints are pooled so future recordings match better.`;
+            const ok = await new Promise(res => { const d = $('merge-dlg'); d.onclose = () => res(d.returnValue === 'ok'); d.returnValue = ''; d.showModal(); });
+            if (!ok) return;
+            r = await send(true); merged = true;
+          }
+          await refreshLibrary();
+          await openDay(state.date, { keepPosition: true });
+          toast(merged ? `Merged into ${displayName(target)}` : `Renamed to ${v} in ${plural(r.updated, 'transcript')}`);
+        } catch (e) { toast(e.message); }
+        return;
+      }
+      if (v === spk.replace(/_/g, ' ')) delete state.renames[spk]; else state.renames[spk] = v;
+      store.set('renames', state.renames);
+      renderSpeakers(); renderTranscript(); renderLibrary();
+      toast(`Renamed to ${v}`);
+    };
+    dlg.showModal();
+    input.select();
+  }
+
+  // ---------- Export ----------
+  function exportTxt() {
+    if (!isReady()) return;
+    const lines = [`Transcript: ${longDate(state.date)}`, ''];
+    let last = null, lastSrc = -1;
+    for (const s of state.segments) {
+      if (state.hidden.has(s.speaker)) continue;
+      const src = srcIndexAt(s.start);
+      if (src !== lastSrc && src >= 0 && state.sources.length > 1) {
+        lines.push('', `=== Recording ${src + 1} (${clock(state.sources[src].recorded_at) || fmt(state.sources[src].start)}) ===`);
+        last = null;
+      }
+      lastSrc = src;
+      if (s.speaker !== last) { lines.push('', `[${clockAt(s.start) || fmt(s.start)}] ${displayName(s.speaker)}:`); last = s.speaker; }
+      lines.push(s.text);
+    }
+    const blob = new Blob([lines.join('\n').trim() + '\n'], { type: 'text/plain' });
+    const a = el('a'); a.href = URL.createObjectURL(blob); a.download = `${state.date}_transcript.txt`;
+    a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+
+  // ---------- Drawers (narrow screens) ----------
+  function openDrawer(id) {
+    const d = $(id), open = !d.classList.contains('open');
+    closeDrawers();
+    if (open) { d.classList.add('open'); $('scrim').classList.remove('hidden'); }
+  }
+  function closeDrawers() {
+    ['library', 'details'].forEach(id => $(id).classList.remove('open'));
+    $('scrim').classList.add('hidden');
+  }
+
+  // ---------- Events ----------
+  $('open-folder').onclick = () => $('folder-input').click();
+  $('open-files').onclick = () => $('files-input').click();
+  $('close-btn').onclick = () => $('folder-input').click();
+  $('folder-input').onchange = e => { ingest([...e.target.files]); e.target.value = ''; };
+  $('files-input').onchange = e => { ingest([...e.target.files]); e.target.value = ''; };
+  $('export-btn').onclick = exportTxt;
+  $('help-btn').onclick = () => $('help-dlg').showModal();
+  $('library-toggle').onclick = () => openDrawer('library');
+  $('details-toggle').onclick = () => openDrawer('details');
+  $('scrim').onclick = closeDrawers;
+  $('prev-day').onclick = () => stepDay(-1);
+  $('next-day').onclick = () => stepDay(1);
+  $('refresh-btn').onclick = () => refreshLibrary(false);
+  $('job-pill').onclick = () => { const d = $('job-pill').dataset.date; if (d) { go(d); closeDrawers(); } };
+  $('process-all').onclick = () => transcribe(state.library.filter(d => d.status === 'pending' && !d.job).map(d => d.date).reverse());
+  $('banner-btn').onclick = () => askTranscribe('Re-transcribe this day');
+  $('redo-btn').onclick = () => askTranscribe('Re-transcribe this day');
+  $('process-dlg').addEventListener('input', e => {
+    if (e.target.type === 'number') e.target.closest('label').querySelector('input[type=radio]').checked = true;
   });
+
+  // Ask how many people were talking, then queue the day
+  function askTranscribe(title) {
+    const hint = state.data?.speaker_hint || {};
+    const n = Object.keys(state.colors).filter(s => s !== 'Unknown').length;
+    $('process-title').textContent = title;
+    const mode = hint.num_speakers ? 'exact' : hint.min_speakers ? 'min' : 'auto';
+    document.querySelector(`input[name=count-mode][value=${mode}]`).checked = true;
+    $('count-exact').value = hint.num_speakers || Math.max(n, 2);
+    $('count-min').value = hint.min_speakers || Math.max(n + 1, 2);
+    $('process-note').textContent = isReady()
+      ? 'Names you have given people are kept. Takes a few minutes for a long day.'
+      : 'You can keep browsing while it runs.';
+    const dlg = $('process-dlg');
+    dlg.returnValue = '';
+    dlg.onclose = () => {
+      if (dlg.returnValue !== 'ok') return;
+      const m = document.querySelector('input[name=count-mode]:checked').value;
+      const h = m === 'exact' ? { num_speakers: +$('count-exact').value }
+        : m === 'min' ? { min_speakers: +$('count-min').value } : {};
+      transcribe([state.date], h);
+    };
+    dlg.showModal();
+  }
+  $('lib-list').addEventListener('click', e => {
+    const card = e.target.closest('.day-card');
+    if (card) { go(card.dataset.date); closeDrawers(); }
+  });
+  window.addEventListener('hashchange', () => {
+    const d = decodeURIComponent(location.hash.slice(1));
+    if (d && d !== state.date && libItem(d)) openDay(d);
+  });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshLibrary(); });
+
+  $('audio-skip').onclick = () => $('audio-dlg').close();
+  $('audio-pick').onclick = () => $('audio-input').click();
+  $('audio-input').onchange = e => {
+    const f = e.target.files[0]; e.target.value = '';
+    if (!f) return;
+    state.files[state.date].audio = f;
+    $('audio-dlg').close();
+    setAudio(f);
+  };
+
+  // Drag & drop (folders included), file mode only
+  async function walk(entry, out) {
+    if (entry.isFile) { out.push(await new Promise((res, rej) => entry.file(res, rej))); return; }
+    if (entry.isDirectory) {
+      const reader = entry.createReader();
+      let batch;
+      do {
+        batch = await new Promise((res, rej) => reader.readEntries(res, rej));
+        for (const e of batch) await walk(e, out);
+      } while (batch.length);
+    }
+  }
+  ['dragenter', 'dragover'].forEach(t => document.addEventListener(t, e => { e.preventDefault(); if (!state.server) $('drop').classList.add('over'); }));
+  ['dragleave', 'drop'].forEach(t => document.addEventListener(t, e => { e.preventDefault(); if (t === 'drop' || !e.relatedTarget) $('drop').classList.remove('over'); }));
+  document.addEventListener('drop', async e => {
+    if (state.server) return;
+    const items = [...(e.dataTransfer.items || [])].map(i => i.webkitGetAsEntry && i.webkitGetAsEntry()).filter(Boolean);
+    const files = [];
+    if (items.length) { for (const it of items) await walk(it, files); } else files.push(...e.dataTransfer.files);
+    if (files.length) ingest(files);
+  });
+
+  $('play').onclick = togglePlay;
+  $('back').onclick = () => seek(audio.currentTime - 10);
+  $('fwd').onclick = () => seek(audio.currentTime + 10);
+  $('rate').onclick = () => setRate(RATES[(RATES.indexOf(audio.playbackRate) + 1) % RATES.length] || 1);
+  $('vol').oninput = e => { audio.volume = +e.target.value; store.set('vol', audio.volume); };
+  $('jump').onclick = () => { state.userScrolledAt = 0; document.querySelector('.cue.active')?.scrollIntoView({ behavior: 'smooth', block: 'center' }); };
+  $('follow').onchange = () => { state.userScrolledAt = 0; syncActive(true); };
+
+  $('transcript').addEventListener('click', e => {
+    const cue = e.target.closest('.cue');
+    if (cue) seek(state.segments[+cue.dataset.i].start, true);
+  });
+  // Pause auto-follow briefly when the user scrolls the transcript themselves
+  ['wheel', 'touchmove'].forEach(t => $('transcript').addEventListener(t, () => state.userScrolledAt = Date.now(), { passive: true }));
+  $('transcript').addEventListener('scroll', () => updateJump(), { passive: true });
+
+  audio.addEventListener('timeupdate', () => { updateProgress(); syncActive(); updateActiveSource(); updateNow(); });
+  audio.addEventListener('play', () => { updatePlayIcon(); syncActive(true); });
+  audio.addEventListener('pause', () => { updatePlayIcon(); savePosition(); syncActive(true); });
+  audio.addEventListener('ended', () => {
+    updatePlayIcon();
+    // Raw recordings play back to back
+    if (!isReady() && state.rawIdx >= 0 && state.rawIdx < state.sources.length - 1) playRaw(state.rawIdx + 1);
+  });
+  audio.addEventListener('loadedmetadata', updateProgress);
+  audio.addEventListener('error', () => { if (audio.getAttribute('src')) toast("Couldn't play that audio file."); });
+  window.addEventListener('beforeunload', savePosition);
+  setInterval(() => { if (!audio.paused) savePosition(); }, 5000);
+
+  // Timeline scrubbing with hover preview
+  const tl = $('timeline'), tip = $('tip');
+  const tlDur = () => (isReady() ? state.duration : audio.duration) || 0;
+  const tAt = x => { const r = tl.getBoundingClientRect(); return Math.max(0, Math.min(1, (x - r.left) / r.width)) * tlDur(); };
+  let dragging = false;
+  tl.addEventListener('pointerdown', e => { if (!tlDur()) return; dragging = true; tl.setPointerCapture(e.pointerId); seek(tAt(e.clientX)); });
+  tl.addEventListener('pointermove', e => {
+    if (!tlDur()) return;
+    const t = tAt(e.clientX), r = tl.getBoundingClientRect();
+    let label = fmt(t);
+    if (isReady()) {
+      const seg = state.segments[findIdx(t)], c = clockAt(t);
+      label = [c || fmt(t), seg ? displayName(seg.speaker) : ''].filter(Boolean).join(' · ');
+    }
+    tip.textContent = label;
+    tip.style.left = Math.max(50, Math.min(r.width - 50, e.clientX - r.left)) + 'px';
+    tip.classList.remove('hidden');
+    if (dragging) seek(t);
+  });
+  tl.addEventListener('pointerup', () => dragging = false);
+  tl.addEventListener('pointerleave', () => { if (!dragging) tip.classList.add('hidden'); });
+  tl.addEventListener('keydown', e => {
+    if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !e.shiftKey) { e.preventDefault(); e.stopPropagation(); seek(audio.currentTime + (e.key === 'ArrowLeft' ? -5 : 5)); }
+  });
+
+  let searchTimer;
+  $('search').addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(renderTranscript, 150); });
+  $('search').addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); gotoMatch(e.shiftKey ? -1 : 1); }
+    if (e.key === 'Escape') { e.target.value = ''; renderTranscript(); e.target.blur(); }
+  });
+
+  document.addEventListener('keydown', e => {
+    if ($('app').classList.contains('hidden') || document.querySelector('dialog[open]')) return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    const typing = /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName) && e.target.type !== 'checkbox' && e.target.type !== 'range';
+    if (typing) return;
+    const k = e.key;
+    if (k === 'Escape') closeDrawers();
+    else if (k === ' ' || k === 'k' || k === 'K') { if (k === ' ' && e.target.tagName === 'BUTTON') return; e.preventDefault(); togglePlay(); }
+    else if (k === 'ArrowLeft' && e.shiftKey) { e.preventDefault(); stepDay(-1); }
+    else if (k === 'ArrowRight' && e.shiftKey) { e.preventDefault(); stepDay(1); }
+    else if (k === 'ArrowLeft') { e.preventDefault(); seek(audio.currentTime - 10); }
+    else if (k === 'ArrowRight') { e.preventDefault(); seek(audio.currentTime + 10); }
+    else if (k === 'j' || k === 'J') stepLine(-1);
+    else if (k === 'l' || k === 'L') stepLine(1);
+    else if (k === '[') setRate(RATES[Math.max(0, RATES.indexOf(audio.playbackRate) - 1)] ?? 1);
+    else if (k === ']') setRate(RATES[Math.min(RATES.length - 1, RATES.indexOf(audio.playbackRate) + 1)] ?? 1);
+    else if (k === '/' && isReady()) { e.preventDefault(); $('search').focus(); }
+    else if (k === 'f' || k === 'F') { $('follow').checked = !$('follow').checked; $('follow').onchange(); toast($('follow').checked ? 'Following audio' : 'Follow off'); }
+    else if (k === '?') $('help-dlg').showModal();
+  });
+
+  // Restore preferences
+  setRate(store.get('rate', 1));
+  audio.volume = store.get('vol', 1); $('vol').value = audio.volume;
+
+  // When served by app.py, load the library straight from the server
+  if (location.protocol.startsWith('http')) {
+    document.body.classList.add('server');  // avoid flashing the folder picker while loading
+    api('/api/library').then(() => { state.server = true; refreshLibrary(); })
+      .catch(() => document.body.classList.remove('server'));
+  }
+})();
 </script>
 </body>
 </html>
