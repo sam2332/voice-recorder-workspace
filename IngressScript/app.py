@@ -295,6 +295,9 @@ def init_db():
             created REAL
         );
     """)
+    # Which of the day's diarization voices a print came from, so naming that voice can move it
+    if "label" not in {r[1] for r in conn.execute("PRAGMA table_info(voiceprints)")}:
+        conn.execute("ALTER TABLE voiceprints ADD COLUMN label TEXT")
     # Older databases kept a single averaged embedding per speaker; keep it as a 'legacy' print
     conn.execute("""
         INSERT INTO voiceprints (speaker_id, embedding, seconds, day, created)
@@ -849,8 +852,8 @@ class VoiceMemory:
                 continue
             spk_id = self._speaker_id(names[label])
             cur.execute("DELETE FROM voiceprints WHERE speaker_id = ? AND day = 'legacy'", (spk_id,))
-            cur.execute("INSERT INTO voiceprints (speaker_id, embedding, seconds, day, created) VALUES (?, ?, ?, ?, ?)",
-                        (spk_id, unit(emb).tobytes(), seconds, day, now))
+            cur.execute("INSERT INTO voiceprints (speaker_id, embedding, seconds, day, created, label) VALUES (?, ?, ?, ?, ?, ?)",
+                        (spk_id, unit(emb).tobytes(), seconds, day, now, label))
             cur.execute("""DELETE FROM voiceprints WHERE speaker_id = ? AND id NOT IN (
                                SELECT id FROM voiceprints WHERE speaker_id = ? ORDER BY created DESC LIMIT ?)""",
                         (spk_id, spk_id, MAX_VOICEPRINTS))
@@ -858,16 +861,71 @@ class VoiceMemory:
                         "WHERE id = ?", (spk_id, spk_id))
 
         # Re-transcribing can leave behind people who no longer appear anywhere; forget them
-        in_use = set(names.values())
-        for other, path in all_transcripts():
-            if other != day:
-                in_use |= {s.get("speaker") for s in load_transcript(path).get("segments", [])}
-        for spk_id, name in cur.execute("SELECT id, name FROM speakers s WHERE NOT EXISTS "
-                                        "(SELECT 1 FROM voiceprints v WHERE v.speaker_id = s.id)").fetchall():
-            if name not in in_use:
-                cur.execute("DELETE FROM speakers WHERE id = ?", (spk_id,))
+        forget_unused_speakers(cur, keep=set(names.values()), skip_day=day)
         cur.commit()
         return names, info
+
+
+def forget_unused_speakers(conn, keep: set[str] = frozenset(), skip_day: str | None = None):
+    """Delete people with no voiceprints whose name no transcript uses."""
+    in_use = set(keep)
+    for other, path in all_transcripts():
+        if other != skip_day:
+            in_use |= {s.get("speaker") for s in load_transcript(path).get("segments", [])}
+    for spk_id, name in conn.execute("SELECT id, name FROM speakers s WHERE NOT EXISTS "
+                                     "(SELECT 1 FROM voiceprints v WHERE v.speaker_id = s.id)").fetchall():
+        if name not in in_use:
+            conn.execute("DELETE FROM speakers WHERE id = ?", (spk_id,))
+
+
+def teach_voice(date: str, old: str, new: str, labels: list[str] | None = None) -> tuple[list[str], bool]:
+    """Naming a voice on a day also teaches it: that day's sample of the voice moves to `new`'s global
+    profile, so future days recognise them. Other days' transcripts are not rewritten.
+    Returns (voice labels changed, whether a sample was available to learn from)."""
+    path = transcript_path(date)
+    with TRANSCRIPT_LOCK:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        targets = [v for v in data.get("voices", [])
+                   if (v.get("label") in labels if labels is not None else v.get("name") == old)]
+        for v in targets:
+            v["name"] = new
+            v["named"] = True
+        if targets:
+            write_transcript(path, data)
+    conn = init_db()
+    learned = False
+    try:
+        old_row = conn.execute("SELECT id FROM speakers WHERE name = ?", (old,)).fetchone()
+        new_id = None
+        if not new.startswith("Unknown"):
+            row = conn.execute("SELECT id FROM speakers WHERE name = ?", (new,)).fetchone()
+            new_id = row[0] if row else conn.execute("INSERT INTO speakers (name, sample_count) VALUES (?, 0)", (new,)).lastrowid
+        now = time.time()
+        for v in targets:
+            emb = v.get("embedding")
+            if emb:
+                # Replace whatever this voice left on this day (under any name) with a print for `new`
+                conn.execute("DELETE FROM voiceprints WHERE day = ? AND label = ?", (date, v["label"]))
+                if new_id:
+                    conn.execute("INSERT INTO voiceprints (speaker_id, embedding, seconds, day, created, label) "
+                                 "VALUES (?, ?, ?, ?, ?, ?)",
+                                 (new_id, unit(np.array(emb, np.float32)).tobytes(), v.get("seconds", 0), date, now, v["label"]))
+                    learned = True
+            elif old_row and new_id:
+                # Older transcript without samples: move the day's print the old name had, if any
+                learned = conn.execute("UPDATE voiceprints SET speaker_id = ? WHERE speaker_id = ? AND day = ?",
+                                       (new_id, old_row[0], date)).rowcount > 0 or learned
+        for spk in {new_id, old_row[0] if old_row else None} - {None}:
+            conn.execute("""DELETE FROM voiceprints WHERE speaker_id = ? AND id NOT IN (
+                                SELECT id FROM voiceprints WHERE speaker_id = ? ORDER BY created DESC LIMIT ?)""",
+                         (spk, spk, MAX_VOICEPRINTS))
+            conn.execute("UPDATE speakers SET sample_count = (SELECT COUNT(*) FROM voiceprints WHERE speaker_id = ?) "
+                         "WHERE id = ?", (spk, spk))
+        forget_unused_speakers(conn, keep={new})
+        conn.commit()
+    finally:
+        conn.close()
+    return [v["label"] for v in targets], learned
 
 
 # --- MAIN INGEST PIPELINE ---
@@ -1239,7 +1297,8 @@ class Engine:
                     "segments": timeline,
                     "trashed": trashed,
                     # Per voice: how sure the match was and who else it might be (viewer suggestions)
-                    "voices": [{"name": names[l], "label": l, "seconds": round(voices[l][1], 1), **voice_info[l]}
+                    "voices": [{"name": names[l], "label": l, "seconds": round(voices[l][1], 1), **voice_info[l],
+                                "embedding": [round(float(x), 5) for x in unit(voices[l][0])]}
                                for l in voices],
                 }, indent=2, ensure_ascii=False), encoding="utf-8")
                 tmp_out.replace(json_out)
@@ -2261,6 +2320,7 @@ def create_app(auto_process: bool = False, force: bool = False):
         old: str
         new: str
         lines: list[dict] | None = None   # only these lines (used by undo); default = all of `old`'s lines
+        labels: list[str] | None = None   # which voices to move back (used by undo)
 
     @app.post("/api/days/{date}/relabel")
     def relabel(date: str, body: RelabelBody):
@@ -2272,8 +2332,10 @@ def create_app(auto_process: bool = False, force: bool = False):
             raise HTTPException(400, "The name can't be empty")
         lines = [{"start": float(l["start"]), "text": str(l["text"])} for l in body.lines] if body.lines is not None else None
         changed = relabel_speaker(date, body.old, new, lines)
-        log(f"{date}: '{body.old}' is '{new}' on this day ({len(changed)} lines)")
-        return {"changed": changed}
+        labels, learned = teach_voice(date, body.old, new, body.labels)
+        log(f"{date}: '{body.old}' is '{new}' on this day ({len(changed)} lines)"
+            + (f"; {new}'s voice profile learned from it" if learned else ""))
+        return {"changed": changed, "labels": labels, "learned": learned}
 
     @app.post("/api/speakers/rename")
     def rename(body: RenameBody):

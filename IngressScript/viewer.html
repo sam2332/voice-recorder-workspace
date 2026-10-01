@@ -1805,8 +1805,11 @@
     try { r = await post({ old: from, new: to }); } catch (e) { toast(e.message); return; }
     await openDay(date, { keepPosition: true });
     api('/api/speakers').then(x => { state.allSpeakers = x.speakers; }).catch(() => {});
-    toast(`${displayName(from)} is ${displayName(to)} on this day`, { action: 'Undo', onAction: async () => {
-      try { await post({ old: to, new: from, lines: r.changed }); } catch (e) { toast(e.message); return; }
+    toast(r.learned
+      ? `${displayName(from)} is ${displayName(to)}. ${displayName(to)}'s voice will be recognised on new days`
+      : `${displayName(from)} is ${displayName(to)} on this day`, { action: 'Undo', onAction: async () => {
+      // Undo moves the lines and the voice sample back
+      try { await post({ old: to, new: from, lines: r.changed, labels: r.labels }); } catch (e) { toast(e.message); return; }
       if (state.date === date) await openDay(date, { keepPosition: true });
       toast('Undone'); refreshLibrary();
     } });

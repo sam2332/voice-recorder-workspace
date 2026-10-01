@@ -2,6 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+**Read [Mistakes.md](Mistakes.md) before changing anything.** It lists mistakes already made on this project and the rules that prevent them. The most important are: ask the user clarifying questions before building, test on real recordings, and never point tests at the real data folders or voice DB.
+
 ## Overview
 
 A personal pipeline for voice-recorder audio. It has two pieces:
@@ -47,10 +49,10 @@ A 2.5-hour day takes about 4 minutes to diarize on the RTX 5060 Ti.
 
 **Pipeline (`Engine.process_day`):** the `STEPS` weights drive the progress bar. `Engine` loads the models once and is shared by `process_all` (CLI) and `Processor` (the server's single worker thread and queue).
 
-1. **Merge.** The ffmpeg *concat filter* decodes and resamples every input, so MP3 and WAV can be mixed on one day; the concat demuxer cannot do that. The audio then goes through `highpass` and `speechnorm` into `<date>_merged.wav` (16 kHz mono).
+1. **Merge.** The ffmpeg *concat filter* decodes and resamples every input, so MP3 and WAV can be mixed on one day; the concat demuxer cannot do that. The audio then goes through `highpass` and `speechnorm` into `<date>/merged.wav` (16 kHz mono).
    - `derustle_wav` then suppresses clothing rustle in place, working in 10-minute pieces. A stretch counts as rustle when the energy above 2.5 kHz is more than 1.5× the 100–1000 Hz energy and lasts at least 240 ms (shorter bursts are 's' sounds). Over rustle, the band above 2.5 kHz is pulled down toward 0.3× the voice band and the 1–2.5 kHz band is half-cut; the voice band is never touched.
-   - It writes `<date>_rustle.npy`: one bool per 256 samples.
-   - `<date>_merged.sources.json` records the recordings (name and size) plus `RUSTLE_STRENGTH`, so the WAV is rebuilt only when either changes.
+   - It writes `<date>/rustle.npy`: one bool per 256 samples.
+   - `<date>/merged.sources.json` records the recordings (name and size) plus `RUSTLE_STRENGTH`, so the WAV is rebuilt only when either changes.
    - Measured on the real 2026-08-20 day: noisy lines lost 15–28 dB of hiss, and 705 clean lines showed 0.0 dB change.
 2. **Transcribe and align** with WhisperX. Voice-activity detection uses `VAD_ONSET` and `VAD_OFFSET`, which are lowered so quiet speech is picked up. `LANGUAGE` is optional.
 3. **Diarize** with `whisperx.diarize.DiarizationPipeline(..., return_embeddings=True, **hint)`.
@@ -69,7 +71,33 @@ A 2.5-hour day takes about 4 minutes to diarize on the RTX 5060 Ti.
    - any line of 4 or fewer words that is mostly rustle counts.
 
    Such lines get `"noise": true`. The viewer hides them by default, and they are excluded from talk time and the speaker count.
-7. **Save** `<date>_transcript.json` under `TRANSCRIPT_LOCK`, writing to a temp file and then renaming. It includes `speaker_hint`, which a later re-transcribe reuses, and `trashed`. New lines that overlap a trashed line by at least 50% are dropped (`overlaps_trashed`), so removed lines stay removed.
+7. **Save** `<date>/transcript.json` under `TRANSCRIPT_LOCK`, writing to a temp file and then renaming. It includes `speaker_hint`, which a later re-transcribe reuses, and `trashed`. New lines that overlap a trashed line by at least 50% are dropped (`overlaps_trashed`), so removed lines stay removed.
+
+**Output layout** (the user moved to this by hand; there is no automatic migration):
+`processed_daily/<YYYY-MM-DD>/{transcript.json, merged.wav, merged.sources.json, rustle.npy, summary.json}` plus `processed_daily/clip_levels.json`, which is shared by all days.
+- Always go through `day_dir()`, `transcript_path()`, `all_transcripts()`, `rustle_mask_path()` and `summary_path()`; never build `OUTPUT_DIR / f"{date}_..."` by hand.
+- Day audio is served at `/audio/<date>/<file>?v=<mtime>`.
+- In file mode the viewer pairs `transcript.json` with `merged.wav` *in the same folder* (`relPath` / `webkitRelativePath`), because every day's audio has the same name.
+
+**Overlapping speech:** `Engine.diarize()` calls the pyannote pipeline directly, not whisperx's wrapper, to get both of its outputs:
+- `exclusive_speaker_diarization` assigns each word to one speaker, as pyannote recommends for ASR alignment. On the real call it fixed back-channel replies ("Perfect.", "Oh, that's pretty fancy.") that had landed on the wrong person.
+- `speaker_diarization` (with overlaps) drives voice share, rustle checks and `seg["overlap"] = [names]`, which is set when another voice talks for at least `OVERLAP_MIN_SECONDS` / `OVERLAP_MIN_SHARE` of a line. The viewer shows it as a "talking over: X" tag.
+- Speech separation (`pyannote/speech-separation-ami-1.0`, which would transcribe both overlapping voices) was offered and not chosen.
+
+**Global voice profiles:**
+- Each transcript's `voices[]` stores every voice's `embedding` (256 floats). `voiceprints.label` records which diarization voice a print came from; `init_db` adds the column with `ALTER TABLE` on older databases.
+- Naming a voice in the day's dropdown calls `relabel_speaker` (lines on that day only) **and** `teach_voice`, which moves that day's print for those labels to the named person's profile, so new days auto-tag them.
+- Undo sends `labels` and moves the print back. For older transcripts without embeddings, the day's print the old name had is moved instead.
+- `forget_unused_speakers` deletes profiles with no prints that no transcript uses.
+- Verified on scratch copies: naming the caller "Jake" on Oct 2 made a new day auto-tag "Jake".
+
+**Day summaries (local Ollama):** `Summarizer` runs one summary at a time in a thread.
+- **Model call:** `ollama_chat` streams from `OLLAMA_URL` / `OLLAMA_MODEL` (default `qwen3.5:35b-a3b`) with `think: false`, `num_predict` capped, `repeat_penalty` 1.1 and `keep_alive` 2m, so VRAM is freed for transcription. An uncapped call once ran for 10+ minutes.
+- **Speed on this PC:** about 120 tokens/s reading and 18 tokens/s writing (14 of 24 GB on the GPU). The 37-minute Oct 2 day took 42 s.
+- **Prompt:** transcript lines are sent as `[L12] 9:43 AM Name: text`. Days longer than `SUMMARY_CHUNK_CHARS` are summarised as per-part notes, which are then merged.
+- **Output:** the model cites `[L12]`, `[L12, L15]` or ranges like `[L30-L45]`, and `refs` maps them to seconds. `drop_empty_sections` removes "No items mentioned" sections, including on read.
+- **Stored:** `<date>/summary.json`, with a `fingerprint` of (speaker, text) for non-noise lines; when it no longer matches, the viewer shows "outdated · Regenerate".
+- **Sections:** Overview, Conversations, Shopping list (things said to be out of or needed), Project ideas (the user's own ideas, not work being explained), To-dos, Decisions & key facts. Viewer: the small `renderMarkdown()` DOM renderer, clickable time chips, and task checkboxes remembered in `localStorage`.
 
 **Real-data lessons (2026-10-02: a quiet morning, then a phone call). Test on real recordings, not only synthetic clips:**
 - **Language:** whisperx detects the language from the first 30 s; a near-silent start gave Norwegian and invented lines such as "Teksting av Nicolai Winther". The default setting is now `"en"` (the user records in English). With auto-detect, `detect_language` is given the 30 s window with the most speech energy.
@@ -112,7 +140,7 @@ A 2.5-hour day takes about 4 minutes to diarize on the RTX 5060 Ti.
 **Transcript JSON contract** (`viewer.html` depends on it):
 
 ```json
-{"date": "YYYY-MM-DD", "language": "en", "audio": "<date>_merged.wav", "speaker_hint": {"min_speakers": 6},
+{"date": "YYYY-MM-DD", "language": "en", "audio": "merged.wav", "speaker_hint": {"min_speakers": 6},
  "sources": [{"name": "V....WAV", "start": 0.0, "duration": 3120.5, "recorded_at": "06:18:54", "bytes": 123}],
  "segments": [{"start": 0.0, "end": 1.2, "speaker": "Speaker_1", "text": "..."}]}
 ```
