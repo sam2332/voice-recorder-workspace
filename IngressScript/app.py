@@ -99,6 +99,7 @@ DEFAULT_SETTINGS = {
     "setup_done": False,          # nothing is transcribed automatically until the user has been through setup
     "auto_transcribe": False,     # transcribe new / incomplete days in the background
     "auto_sync": False,           # start syncing on startup if the recorder is connected
+    "auto_summarize": False,      # summarize new days and update overview automatically
     "language": LANGUAGE or "en",   # "" = detect
     "rustle_strength": RUSTLE_STRENGTH,
 }
@@ -115,7 +116,7 @@ def load_settings() -> dict:
 
 
 def save_settings(patch: dict) -> dict:
-    allowed = {"setup_done": bool, "auto_transcribe": bool, "auto_sync": bool, "language": str, "rustle_strength": float}
+    allowed = {"setup_done": bool, "auto_transcribe": bool, "auto_sync": bool, "auto_summarize": bool, "language": str, "rustle_strength": float}
     with _settings_lock:
         data = load_settings()
         for key, kind in allowed.items():
@@ -435,7 +436,7 @@ def prepare_daily_audio(date_str: str, file_list: list[Path]) -> Path:
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True)
         if proc.returncode != 0:
-            raise RuntimeError(f"ffmpeg failed merging {date_str}:\n{proc.stderr.strip()}")
+            raise RuntimeError(f"ffmpeg failed merging {date_str}:\n{proc.stderr.strip()[-200:]}")
         regions = [(int(src["start"] * SAMPLE_RATE), int((src["start"] + src["duration"]) * SAMPLE_RATE),
                     strength if levels[src["name"]]["rustle"] is None else levels[src["name"]]["rustle"])
                    for src in describe_sources(file_list)]
@@ -2504,6 +2505,21 @@ class Summarizer:
                 log(f"[summary] {date} FAILED: {e}")
                 self._set(date, status="failed", error=str(e))
 
+    def watch(self, interval: int = 300):
+        """Periodically checks for days that need summarizing and runs them."""
+        def _watch():
+            while True:
+                if setting("auto_summarize") and not self._one_at_a_time.locked():
+                    # Find days that have a transcript but no summary (or an outdated one)
+                    for date in all_transcripts():
+                        if not summary_path(date).is_file():
+                            self.start(date)
+                            break # Summarize one by one
+                    # If all days are summarized, we could potentially trigger a global overview here
+                    # But global overview is usually a separate manual action or a final step.
+                time.sleep(interval)
+        threading.Thread(target=_watch, daemon=True, name="summary-watch").start()
+
 
 # --- BACKGROUND PROCESSING (for the viewer) ---
 class Processor:
@@ -3006,6 +3022,7 @@ def create_app(auto_process: bool = False, force: bool = False):
         return {"speakers": sorted(names, key=str.lower), "tv": sorted(tv, key=str.lower)}
 
     summarizer = Summarizer()
+    summarizer.watch()
 
     def summary_state(date: str) -> dict:
         job = summarizer.state(date)

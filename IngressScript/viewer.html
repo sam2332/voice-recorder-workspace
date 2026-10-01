@@ -1256,6 +1256,11 @@
     ta.append(el('div', null, 'Sync recorder automatically on startup'), el('div', 'hint', 'If enabled, the app will automatically sync any plugged-in recorder when it starts.'));
     la.append(ta, async);
 
+    const asum = el('input', 'switch'); asum.type = 'checkbox'; asum.checked = !!s.auto_summarize;
+    const l_asum = el('label', 'row-l'); const t_asum = el('div');
+    t_asum.append(el('div', null, 'Summarize recordings automatically'), el('div', 'hint', 'Off: summaries wait for you. On: they start as soon as the transcript is ready.'));
+    l_asum.append(t_asum, asum);
+
     const lang = el('select'); LANGS.forEach(([v, n]) => { const o = el('option', null, n); o.value = v; lang.append(o); }); lang.value = s.language || '';
     const l2 = el('label', 'row-l'); const t2 = el('div');
     t2.append(el('div', null, 'Language'), el('div', 'hint', 'Choosing it avoids mistakes when a day starts with noise.'));
@@ -1265,9 +1270,9 @@
     const l3 = el('label', 'row-l'); const t3 = el('div');
     t3.append(el('div', null, 'Clothing-rustle cleanup'), el('div', 'hint', 'Turns down the scratchy sound of the mic rubbing on clothes. Voices are left alone.'));
     l3.append(t3, rustle);
-    form.append(l1, la, l2, l3);
+    form.append(l1, la, l_asum, l2, l3);
     const actions = el('div', 'actions');
-    actions.append(btn(saveLabel, 'primary', () => onSave({ auto_transcribe: auto.checked, auto_sync: async.checked, language: lang.value, rustle_strength: +rustle.value })));
+    actions.append(btn(saveLabel, 'primary', () => onSave({ auto_transcribe: auto.checked, auto_sync: async.checked, auto_summarize: asum.checked, language: lang.value, rustle_strength: +rustle.value })));
     form.append(actions);
     return form;
   }
