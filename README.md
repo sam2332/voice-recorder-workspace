@@ -64,6 +64,11 @@ Files must be named like the recorder names them: `V2026-08-20-06-18-54.MP3` or 
   - Who talked how much. Click a speaker to hide or show them; double-click to rename.
   - **Same person listed twice?** Rename one to the other's name and confirm the merge. Their lines on every day join up, and their voiceprints are pooled so future recordings match better.
   - **Wrong number of people?** Use **Re-transcribe this day…** and say how many were talking ("at least 6" works best when you're not sure). Names you've given are kept.
+- **Removing lines:** hover a line and click the bin, or focus it and press **Del**. **Undo** appears for a few seconds. Removed lines stay removed even if the day is re-transcribed.
+- **Clothing rustle:**
+  - The scratchy sound of the mic rubbing on a shirt is turned down automatically before transcription and in playback. Voices aren't touched.
+  - Lines that are probably just noise (Whisper "hearing" *"Thank you."* or *"so so"* in rustle) are hidden as **likely noise**. Show them with the button above the transcript, then **Trash all**, or click ✓ on any that are real.
+  - Set `RUSTLE_STRENGTH=0` in `.env` to turn the suppression off, or `0.5` to soften it.
 - Use ‹ › or **Shift+←/→** to move between days. Press `?` for the keyboard shortcuts.
 
 ## Tuning
@@ -72,7 +77,7 @@ These settings are at the top of `IngressScript/app.py`:
 
 | Setting | Default | Effect |
 |---|---|---|
-| `CLUSTER_THRESHOLD` | see file | Lower values split voices more eagerly (more sensitive) |
+| `RUSTLE_STRENGTH` (env) | 1.0 | Clothing-rustle suppression; 0 = off |
 | `SAME_PERSON_THRESHOLD` | 0.75 | Clusters at least this similar are joined back into one person |
 | `MATCH_THRESHOLD` | 0.55 | How similar a voice must be to a known person to reuse their name |
 | `VAD_ONSET` / `VAD_OFFSET` | 0.35 / 0.25 | Lower values pick up quieter or more distant speech |

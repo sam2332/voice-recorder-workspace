@@ -44,7 +44,6 @@ MIN_RECORDING_SECONDS = 3.0        # Skip accidental taps / clicks
 
 # Speaker detection. Voiceprints are the diarization pipeline's own per-speaker centroids
 # (wespeaker embeddings averaged over each speaker's clean, non-overlapping speech).
-CLUSTER_THRESHOLD = 0.6            # pyannote VBx clustering; lower = splits voices more eagerly
 SAME_PERSON_THRESHOLD = 0.75       # Two of today's clusters this similar are one person, re-joined
 MATCH_THRESHOLD = 0.55             # Similarity needed to say "this is a known person" from another day
 MAX_VOICEPRINTS = 40               # Stored voiceprints kept per person (oldest dropped)
@@ -53,6 +52,17 @@ MAX_VOICEPRINTS = 40               # Stored voiceprints kept per person (oldest 
 VAD_ONSET = 0.35
 VAD_OFFSET = 0.25
 SAMPLE_RATE = 16000
+
+# Clothing rustle (mic rubbing on a shirt): loud scratchy hiss above ~2.5 kHz. 0 turns it off.
+RUSTLE_STRENGTH = float(os.getenv("RUSTLE_STRENGTH", "1.0"))
+RUSTLE_MAX_CUT_DB = 30             # The most the scratchy band is ever turned down
+RUSTLE_MIN_DB = 20                 # Quieter frames than this are left alone
+RUSTLE_HOP = 256                   # Rustle map resolution (samples at 16 kHz = 16 ms)
+# Things Whisper "hears" in pure noise. Lines like these that sit in rustle get flagged as noise.
+NOISE_PHRASES = {"thank you", "thanks", "thank you very much", "thanks for watching", "thank you for watching",
+                 "you", "so", "mm", "mmm", "hmm", "um", "uh", "the end"}
+# Real words people say a lot; only treated as noise when they sit in rustle
+NOISE_IF_RUSTLE = {"okay", "ok", "oh", "ah", "bye", "yeah", "damn"}
 GATED_MODELS = ["pyannote/speaker-diarization-community-1"]
 
 # V2026-08-20-06-18-54.MP3 / .WAV -> date 2026-08-20, recorded at 06:18:54
@@ -150,12 +160,18 @@ def describe_sources(files: list[Path]) -> list[dict]:
     return sources
 
 
+def rustle_mask_path(date_str: str) -> Path:
+    return OUTPUT_DIR / f"{date_str}_rustle.npy"
+
+
 def prepare_daily_audio(date_str: str, file_list: list[Path]) -> Path:
     merged_path = OUTPUT_DIR / f"{date_str}_merged.wav"
     # Sidecar records which recordings the WAV was built from, so new recordings trigger a rebuild
     manifest = OUTPUT_DIR / f"{date_str}_merged.sources.json"
-    names = [f.name for f in file_list]
-    if merged_path.exists() and manifest.exists():
+    mask_path = rustle_mask_path(date_str)
+    # Rebuilt when the recordings (or the rustle setting) change
+    names = {"files": [[f.name, f.stat().st_size] for f in file_list], "rustle": RUSTLE_STRENGTH}
+    if merged_path.exists() and manifest.exists() and mask_path.exists():
         try:
             if json.loads(manifest.read_text(encoding="utf-8")) == names:
                 return merged_path
@@ -182,11 +198,100 @@ def prepare_daily_audio(date_str: str, file_list: list[Path]) -> Path:
         proc = subprocess.run(cmd, capture_output=True, text=True)
         if proc.returncode != 0:
             raise RuntimeError(f"ffmpeg failed merging {date_str}:\n{proc.stderr.strip()}")
+        mask = derustle_wav(tmp_path)
+        np.save(mask_path, mask)
+        log(f"      rustle suppressed in {mask.mean() * 100:.0f}% of the audio")
         tmp_path.replace(merged_path)
         manifest.write_text(json.dumps(names), encoding="utf-8")
     finally:
         tmp_path.unlink(missing_ok=True)
     return merged_path
+
+
+# --- CLOTHING RUSTLE SUPPRESSION ---
+def suppress_rustle(x: np.ndarray, sr: int = SAMPLE_RATE, strength: float = RUSTLE_STRENGTH):
+    """Turn down fabric rustle (a mic rubbing on a shirt) in float audio. Rustle is loud hiss whose
+    energy sits mostly above ~2.5 kHz, while voices keep most of theirs below 1 kHz. Where the high
+    band swamps the voice band for longer than a syllable (so 's' sounds are left alone), the high
+    band is pulled down to a speech-like level and 1-2.5 kHz gets half that cut. The voice band is
+    never touched, so speech under the rustle survives.
+    Returns (cleaned audio, rustle mask with one bool per RUSTLE_HOP samples)."""
+    n, hop = 2 * RUSTLE_HOP, RUSTLE_HOP
+    n_hops = (len(x) + hop - 1) // hop
+    if len(x) < 4 * n:
+        return x, np.zeros(n_hops, bool)
+    win = np.sqrt(np.hanning(n + 1)[:-1]).astype(np.float32)   # sqrt-Hann at 50% overlap reconstructs exactly
+    freqs = np.fft.rfftfreq(n, 1 / sr)
+    voice_b = (freqs >= 100) & (freqs < 1000)
+    mid_b = (freqs >= 1000) & (freqs < 2500)
+    high_b = freqs >= 2500
+    floor = 10 ** (-RUSTLE_MAX_CUT_DB / 20)
+
+    pad = np.concatenate([np.zeros(n, np.float32), x.astype(np.float32), np.zeros(n + hop, np.float32)])
+    total = (len(pad) - n) // hop + 1
+    frames = np.lib.stride_tricks.sliding_window_view(pad, n)[::hop][:total] * win
+    X = np.fft.rfft(frames, axis=1)
+    P = (X.real ** 2 + X.imag ** 2) + 1e-12
+    v = P[:, voice_b].sum(1)
+    h = P[:, high_b].sum(1)
+    rustle = (h > 1.5 * v) & (10 * np.log10(P.sum(1)) > RUSTLE_MIN_DB)
+    # Must persist ~240 ms: 's'/'sh' sounds are shorter than that, rustle bursts are longer
+    rustle = np.convolve(rustle.astype(np.float32), np.ones(15) / 15, mode="same") > 0.5
+    if strength > 0:
+        g_high = np.where(rustle, np.clip(np.sqrt(0.3 * v / h), floor, 1.0), 1.0) ** strength
+        g_high = np.convolve(g_high, np.ones(5) / 5, mode="same").astype(np.float32)  # no pumping/clicks
+        X[:, high_b] *= g_high[:, None]
+        X[:, mid_b] *= np.sqrt(g_high)[:, None]
+    y = np.fft.irfft(X, n=n, axis=1).astype(np.float32) * win
+    out = np.zeros(len(pad), np.float32)          # overlap-add; hop is exactly half a frame
+    out[:total * hop] += y[:, :hop].reshape(-1)
+    out[hop:(total + 1) * hop] += y[:, hop:].reshape(-1)
+    # Frame k is centred on sample (k - 1) * hop of x
+    mask = rustle[1:n_hops + 1]
+    return out[n:n + len(x)], np.pad(mask, (0, max(0, n_hops - len(mask))))
+
+
+def derustle_wav(path: Path) -> np.ndarray:
+    """Clean a 16 kHz mono WAV in place (10-minute pieces, so multi-hour days stay light on memory).
+    Returns the rustle mask for the whole file."""
+    from scipy.io import wavfile
+    sr, data = wavfile.read(path, mmap=True)
+    piece, ctx = RUSTLE_HOP * 37500, RUSTLE_HOP * 64   # ~10 min pieces, ~1 s of context each side
+    out = np.empty(len(data), np.int16)
+    mask = np.zeros((len(data) + RUSTLE_HOP - 1) // RUSTLE_HOP, bool)
+    for a in range(0, len(data), piece):
+        lo, hi = max(0, a - ctx), min(len(data), a + piece + ctx)
+        y, m = suppress_rustle(data[lo:hi].astype(np.float32) / 32768, sr)
+        b = min(a + piece, len(data))
+        out[a:b] = np.clip(y[a - lo:b - lo] * 32768, -32768, 32767).astype(np.int16)
+        ma, mb = a // RUSTLE_HOP, (b + RUSTLE_HOP - 1) // RUSTLE_HOP
+        mask[ma:mb] = m[(a - lo) // RUSTLE_HOP:(a - lo) // RUSTLE_HOP + (mb - ma)]
+    del data
+    tmp = path.with_suffix(".clean.wav")
+    wavfile.write(tmp, sr, out)
+    tmp.replace(path)
+    return mask
+
+
+def rustle_share(mask: np.ndarray | None, start: float, end: float) -> float:
+    """Fraction of a stretch of the merged day audio that was rustle."""
+    if mask is None or not len(mask):
+        return 0.0
+    a, b = int(start * SAMPLE_RATE / RUSTLE_HOP), int(np.ceil(end * SAMPLE_RATE / RUSTLE_HOP))
+    seg = mask[a:max(b, a + 1)]
+    return float(seg.mean()) if len(seg) else 0.0
+
+
+def looks_like_noise(text: str, rustle: float, score: float | None) -> bool:
+    """A transcript line that is most likely Whisper 'hearing' words in rustle or other noise."""
+    words = re.sub(r"[^\w\s']", " ", text.lower()).split()
+    phrase = " ".join(dict.fromkeys(words))  # "so so" -> "so"
+    weak = score is not None and score < 0.5
+    if phrase in NOISE_PHRASES and (rustle >= 0.4 or weak):
+        return True
+    if phrase in NOISE_IF_RUSTLE and rustle >= 0.6:
+        return True
+    return rustle >= 0.8 and len(words) <= 4 and (score is None or score < 0.6)
 
 
 # --- SPEAKER PROFILE MATCHER ---
@@ -360,7 +465,7 @@ def same_person_groups(emb: dict[str, np.ndarray], threshold: float, min_people:
 
 def split_by_speaker(segments: list[dict], language: str) -> list[dict]:
     """Whisper segments often span a change of speaker. Split them where the word-level speaker
-    changes, ignoring 1-2 word blips at the boundary (usually timing jitter)."""
+    changes, ignoring 1-2 word blips under a second at the boundary (usually timing jitter)."""
     joiner = "" if language in ("zh", "ja", "th", "lo", "km", "my", "yue") else " "
     lines = []
     for seg in segments:
@@ -374,9 +479,11 @@ def split_by_speaker(segments: list[dict], language: str) -> list[dict]:
         for w in words:
             spk = w.get("speaker") or (runs[-1]["speaker"] if runs else seg.get("speaker"))
             if not runs or runs[-1]["speaker"] != spk:
-                runs.append({"speaker": spk, "words": [], "start": None, "end": None})
+                runs.append({"speaker": spk, "words": [], "scores": [], "start": None, "end": None})
             r = runs[-1]
             r["words"].append(str(w["word"]).strip())
+            if w.get("score") is not None:
+                r["scores"].append(float(w["score"]))
             if w.get("start") is not None and r["start"] is None:
                 r["start"] = w["start"]
             if w.get("end") is not None:
@@ -388,19 +495,22 @@ def split_by_speaker(segments: list[dict], language: str) -> list[dict]:
                 r["start"] = merged[-1]["end"] if merged else seg["start"]
             if r["end"] is None:
                 r["end"] = r["start"]
-            tiny = len(r["words"]) <= 2 and r["end"] - r["start"] < 0.6
+            tiny = len(r["words"]) <= 2 and r["end"] - r["start"] < 1.0
             if merged and (tiny or merged[-1]["speaker"] == r["speaker"]):
                 merged[-1]["words"] += r["words"]
+                merged[-1]["scores"] += r["scores"]
                 merged[-1]["end"] = max(merged[-1]["end"], r["end"])
             else:
                 merged.append(r)
-        if len(merged) > 1 and len(merged[0]["words"]) <= 2 and merged[0]["end"] - merged[0]["start"] < 0.6:
+        if len(merged) > 1 and len(merged[0]["words"]) <= 2 and merged[0]["end"] - merged[0]["start"] < 1.0:
             first = merged.pop(0)
             merged[0]["words"] = first["words"] + merged[0]["words"]
+            merged[0]["scores"] = first["scores"] + merged[0]["scores"]
             merged[0]["start"] = first["start"]
         for r in merged:
             lines.append({"start": r["start"], "end": r["end"], "speaker": r["speaker"],
-                          "text": joiner.join(r["words"])})
+                          "text": joiner.join(r["words"]),
+                          "score": float(np.mean(r["scores"])) if r["scores"] else None})
     return lines
 
 
@@ -447,11 +557,6 @@ class Engine:
             "large-v3", self.device, compute_type=compute_type, language=LANGUAGE,
             vad_options={"vad_onset": VAD_ONSET, "vad_offset": VAD_OFFSET})
         self.diarize_model = DiarizationPipeline(token=HF_TOKEN, device=self.device)
-        # Cluster more eagerly so quiet / brief speakers get their own voice; near-identical
-        # clusters are joined again afterwards by same_person_groups().
-        params = self.diarize_model.model.parameters(instantiated=True)
-        params["clustering"]["threshold"] = CLUSTER_THRESHOLD
-        self.diarize_model.model.instantiate(params)
 
     def process_day(self, date_key: str, files: list[Path], progress=None, hint: dict | None = None) -> Path:
         """Transcribe one day. `progress(fraction, label)` is called as work advances.
@@ -524,27 +629,44 @@ class Engine:
             lines = split_by_speaker(result["segments"], language)
 
             turns = list(zip(diarize_df.start, diarize_df.end, diarize_df.speaker))
+            mask = np.load(rustle_mask_path(date_key)) if rustle_mask_path(date_key).exists() else None
+            # A "voice" that is mostly rustle is the shirt, not a person: don't give it a voiceprint
+            for label in list(voices):
+                spans = [(a, b) for a, b, l in turns if l == label]
+                secs = sum(b - a for a, b in spans) or 1
+                if sum(rustle_share(mask, a, b) * (b - a) for a, b in spans) / secs >= 0.7:
+                    log(f"      {label} is mostly clothing rustle; not treated as a person")
+                    del voices[label]
             prior = names_from_previous(turns, previous["segments"]) if previous else {}
             prior = {l: n for l, n in prior.items() if l in voices}
             names = self.memory.assign(date_key, voices, prior)
 
-            timeline = [{
-                "start": round(line["start"], 2),
-                "end": round(line["end"], 2),
-                "speaker": names.get(line["speaker"], "Unknown"),
-                "text": line["text"],
-            } for line in lines if line["text"].strip()]
+            timeline = []
+            for line in lines:
+                if not line["text"].strip():
+                    continue
+                seg = {"start": round(line["start"], 2), "end": round(line["end"], 2),
+                       "speaker": names.get(line["speaker"], "Unknown"), "text": line["text"]}
+                if looks_like_noise(line["text"], rustle_share(mask, line["start"], line["end"]), line["score"]):
+                    seg["noise"] = True
+                timeline.append(seg)
 
-            tmp_out = json_out.with_suffix(".tmp")
-            tmp_out.write_text(json.dumps({
-                "date": date_key,
-                "language": language,
-                "audio": audio_file.name,
-                "speaker_hint": hint,
-                "sources": describe_sources(files),
-                "segments": timeline,
-            }, indent=2, ensure_ascii=False), encoding="utf-8")
-            tmp_out.replace(json_out)
+            with TRANSCRIPT_LOCK:
+                # Lines the user trashed stay gone after re-transcribing
+                latest = load_transcript(json_out) if json_out.exists() else {}
+                trashed = latest.get("trashed", [])
+                timeline = [seg for seg in timeline if not overlaps_trashed(seg, trashed)]
+                tmp_out = json_out.with_suffix(".tmp")
+                tmp_out.write_text(json.dumps({
+                    "date": date_key,
+                    "language": language,
+                    "audio": audio_file.name,
+                    "speaker_hint": hint,
+                    "sources": describe_sources(files),
+                    "segments": timeline,
+                    "trashed": trashed,
+                }, indent=2, ensure_ascii=False), encoding="utf-8")
+                tmp_out.replace(json_out)
             finish("save")
             if progress:
                 progress(1.0, "Done")
@@ -601,6 +723,55 @@ def process_all(force: bool = False, hint: dict | None = None):
 
 # --- TRANSCRIPT HELPERS ---
 _transcript_cache: dict[str, tuple[float, dict]] = {}
+TRANSCRIPT_LOCK = threading.RLock()   # the viewer edits transcripts while the worker may be writing one
+
+
+def write_transcript(path: Path, data: dict):
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(path)
+
+
+def overlaps_trashed(seg: dict, trashed: list[dict]) -> bool:
+    """True if a new line mostly covers the same moment as a line the user trashed."""
+    d = max(seg["end"] - seg["start"], 0.01)
+    return any(min(seg["end"], t["end"]) - max(seg["start"], t["start"]) >= 0.5 * d for t in trashed)
+
+
+def edit_lines(date: str, items: list[dict], action: str) -> int:
+    """Viewer edits on a day's transcript. Lines are identified by start time + text.
+    action: 'trash' (remove; remembered so re-transcribing won't bring them back),
+            'restore' (undo a trash), or 'keep' (it was flagged as noise but is real speech)."""
+    path = OUTPUT_DIR / f"{date}_transcript.json"
+    same = lambda a, b: abs(a["start"] - b["start"]) < 0.02 and a["text"] == b["text"]
+    with TRANSCRIPT_LOCK:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data.setdefault("trashed", [])
+        changed = 0
+        if action == "trash":
+            keep = []
+            for seg in data["segments"]:
+                if any(same(seg, it) for it in items):
+                    data["trashed"].append(seg)
+                    changed += 1
+                else:
+                    keep.append(seg)
+            data["segments"] = keep
+        elif action == "restore":
+            back = [t for t in data["trashed"] if any(same(t, it) for it in items)]
+            data["trashed"] = [t for t in data["trashed"] if t not in back]
+            for seg in back:
+                seg.pop("noise", None)   # restoring a line says "this is real"
+            data["segments"] = sorted(data["segments"] + back, key=lambda s: s["start"])
+            changed = len(back)
+        elif action == "keep":
+            for seg in data["segments"]:
+                if seg.get("noise") and any(same(seg, it) for it in items):
+                    del seg["noise"]
+                    changed += 1
+        if changed:
+            write_transcript(path, data)
+        return changed
 
 
 def load_transcript(path: Path) -> dict:
@@ -670,24 +841,20 @@ def rename_speaker_core(old: str, new: str, merge: bool = False) -> int:
     elif old_row:
         conn.execute("UPDATE speakers SET name = ? WHERE id = ?", (new, old_row[0]))
 
-    # Update existing transcripts too, so old days show the new name
-    pending = []
-    for path, data in in_transcripts.items():
-        data = json.loads(json.dumps(data))  # don't mutate the cached copy
-        changed = False
-        for seg in data.get("segments", []):
-            if seg.get("speaker") == old:
-                seg["speaker"] = new
-                changed = True
-        if changed:
-            pending.append((path, data))
-
+    # Update existing transcripts too, so old days show the new name (trashed lines included)
+    pending = [p for p, d in in_transcripts.items()
+               if any(s.get("speaker") == old for s in d.get("segments", []) + d.get("trashed", []))]
     if not old_row and not pending:
         conn.rollback()
         raise RenameError(f"No speaker named '{old}'. Run with --speakers to see the list.")
     conn.commit()
-    for path, data in pending:
-        path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    with TRANSCRIPT_LOCK:
+        for path in pending:
+            data = json.loads(path.read_text(encoding="utf-8"))   # fresh copy, not the cache
+            for seg in data.get("segments", []) + data.get("trashed", []):
+                if seg.get("speaker") == old:
+                    seg["speaker"] = new
+            write_transcript(path, data)
     return len(pending)
 
 
@@ -837,6 +1004,10 @@ def create_app(auto_process: bool = False, force: bool = False):
         # None = reuse the day's previous hint; {} = let it decide automatically
         hint: dict | None = None
 
+    class LinesBody(BaseModel):
+        action: str               # trash | restore | keep
+        items: list[dict]         # [{start, text}]
+
     def check_date(date: str):
         if not DATE_RE.match(date):
             raise HTTPException(404, "Unknown day")
@@ -871,7 +1042,7 @@ def create_app(auto_process: bool = False, force: bool = False):
                 if data is not None:
                     segs = data.get("segments", [])
                     talk: dict[str, float] = {}
-                    for s in segs:
+                    for s in (s for s in segs if not s.get("noise")):
                         talk[s.get("speaker")] = talk.get(s.get("speaker"), 0) + s["end"] - s["start"]
                     known = set(transcript_source_names(data))
                     src_total = sum(s.get("duration") or 0 for s in transcript_sources(data))
@@ -940,6 +1111,16 @@ def create_app(auto_process: bool = False, force: bool = False):
         if not processor.cancel(date):
             raise HTTPException(409, "Only queued days can be cancelled; a running day finishes first.")
         return {"cancelled": True}
+
+    @app.post("/api/days/{date}/lines")
+    def lines(date: str, body: LinesBody):
+        check_date(date)
+        if body.action not in ("trash", "restore", "keep"):
+            raise HTTPException(400, "Unknown action")
+        if not (OUTPUT_DIR / f"{date}_transcript.json").is_file():
+            raise HTTPException(404, f"No transcript for {date}")
+        items = [{"start": float(i["start"]), "text": str(i["text"])} for i in body.items if "start" in i and "text" in i]
+        return {"changed": edit_lines(date, items, body.action)}
 
     @app.post("/api/speakers/rename")
     def rename(body: RenameBody):

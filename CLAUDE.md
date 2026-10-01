@@ -48,7 +48,11 @@ A 2.5-hour day takes about 4 minutes to diarize on the RTX 5060 Ti.
 
 **Pipeline (`Engine.process_day`):** the `STEPS` weights drive the progress bar. `Engine` loads the models once and is shared by `process_all` (CLI) and `Processor` (the server's single worker thread and queue).
 
-1. **Merge.** The ffmpeg *concat filter* decodes and resamples every input, so MP3 and WAV can be mixed on one day; the concat demuxer cannot do that. The audio then goes through `highpass` and `speechnorm` into `<date>_merged.wav` (16 kHz mono). `<date>_merged.sources.json` records which recordings went in, so the WAV is rebuilt only when that list changes.
+1. **Merge.** The ffmpeg *concat filter* decodes and resamples every input, so MP3 and WAV can be mixed on one day; the concat demuxer cannot do that. The audio then goes through `highpass` and `speechnorm` into `<date>_merged.wav` (16 kHz mono).
+   - `derustle_wav` then suppresses clothing rustle in place, working in 10-minute pieces. A stretch counts as rustle when the energy above 2.5 kHz is more than 1.5× the 100–1000 Hz energy and lasts at least 240 ms (shorter bursts are 's' sounds). Over rustle, the band above 2.5 kHz is pulled down toward 0.3× the voice band and the 1–2.5 kHz band is half-cut; the voice band is never touched.
+   - It writes `<date>_rustle.npy`: one bool per 256 samples.
+   - `<date>_merged.sources.json` records the recordings (name and size) plus `RUSTLE_STRENGTH`, so the WAV is rebuilt only when either changes.
+   - Measured on the real 2026-08-20 day: noisy lines lost 15–28 dB of hiss, and 705 clean lines showed 0.0 dB change.
 2. **Transcribe and align** with WhisperX. Voice-activity detection uses `VAD_ONSET` and `VAD_OFFSET`, which are lowered so quiet speech is picked up. `LANGUAGE` is optional.
 3. **Diarize** with `whisperx.diarize.DiarizationPipeline(..., return_embeddings=True, **hint)`.
    - The returned per-speaker centroids (wespeaker embeddings averaged over clean, non-overlapping speech) *are* the voiceprints; there is no separate embedding model.
@@ -60,12 +64,21 @@ A 2.5-hour day takes about 4 minutes to diarize on the RTX 5060 Ti.
    - enrols the rest as `Speaker_N`;
    - stores one voiceprint per person per day (capped at `MAX_VOICEPRINTS`);
    - deletes speakers that have no voiceprints and appear in no transcript.
-6. **Save** `<date>_transcript.json` (written to a temp file, then renamed), including `speaker_hint`, which a later re-transcribe reuses.
+6. **Noise.** A diarized "voice" whose turns are at least 70% rustle gets no voiceprint. Each line is checked by `looks_like_noise(text, rustle_share, word score)`:
+   - `NOISE_PHRASES` (Whisper hallucinations such as "Thank you.") count as noise when the line is in rustle or has a weak alignment score;
+   - `NOISE_IF_RUSTLE` (common real words) count only when the line is in rustle;
+   - any line of 4 or fewer words that is mostly rustle counts.
+
+   Such lines get `"noise": true`. The viewer hides them by default, and they are excluded from talk time and the speaker count.
+7. **Save** `<date>_transcript.json` under `TRANSCRIPT_LOCK`, writing to a temp file and then renaming. It includes `speaker_hint`, which a later re-transcribe reuses, and `trashed`. New lines that overlap a trashed line by at least 50% are dropped (`overlaps_trashed`), so removed lines stay removed.
+
+**Line edits:** `edit_lines(date, items, action)` identifies a line by its start time (±0.02 s) and text. It is exposed as `POST /api/days/{date}/lines` with body `{action: trash|restore|keep, items: [{start, text}]}`. `restore` also clears the `noise` flag. All transcript writes, including rename and merge, go through `TRANSCRIPT_LOCK` and `write_transcript`.
 
 **Experiment findings on the real 2026-08-20 day:**
 - The default pyannote clustering found 5 clusters, two of which were the same person (similarity 0.83).
 - Forcing 6 speakers re-split that same person (0.84) rather than finding a new voice.
 - Lowering the clustering `threshold` from 0.6 to 0.5 changed nothing.
+- Lowering VBx `Fb` to 0.3 gave 11 clusters, five of them tiny fragments of 0.3–0.9 minutes. Pyannote's default clustering parameters are therefore kept, and the reliable sensitivity control is the user's speaker-count hint.
 - Distinct people score ≤ 0.65 against each other, and splits of one person score ≥ 0.83. That gap is why `SAME_PERSON_THRESHOLD` is 0.75.
 
 **Voice DB (SQLite):**
