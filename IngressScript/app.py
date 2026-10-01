@@ -213,6 +213,22 @@ class Syncer:
         self.state: dict = {"running": False}
         self.on_done = on_done   # called with the dates that received new recordings
 
+    def watch(self, interval: int = 60):
+        """Periodically checks for new recordings and starts sync if auto_sync is on."""
+        def _watch():
+            while True:
+                if setting("auto_sync") and not self.state.get("running"):
+                    recorders = find_recorders()
+                    for r in recorders:
+                        if r["new"] > 0:
+                            try:
+                                self.start(r["root"])
+                                break
+                            except Exception as e:
+                                log(f"[sync-watch] failed to start: {e}")
+                time.sleep(interval)
+        threading.Thread(target=_watch, daemon=True, name="recorder-sync-watch").start()
+
     def status(self) -> dict:
         with self.lock:
             return dict(self.state)
@@ -2597,6 +2613,7 @@ def create_app(auto_process: bool = False, force: bool = False):
                 processor.enqueue(d)
 
     syncer = Syncer(on_done=after_sync)
+    syncer.watch()
     # Auto-sync: if enabled and a recorder with new files is plugged in at startup, start sync immediately.
     # This uses the normal syncer, so the progress UI will be visible to the user in the viewer.
     if setting("auto_sync"):
