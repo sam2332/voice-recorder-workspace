@@ -116,6 +116,11 @@ A 2.5-hour day takes about 4 minutes to diarize on the RTX 5060 Ti.
 - Naming uses the normal `whoPicker` → `relabelVoice` (day relabel + `teach_voice`, which sets `voices[].named`).
 - "Done" posts `POST /api/days/{date}/voices/reviewed`. It is wired to the button's click: the dialog `close` event never fired in the desktop app's built-in browser.
 
+**Teaching voices from single lines:** moving a line to someone in the line editor adds it to a per-day tray (`localStorage` `teach:<date>`). "Teach voices…" opens `#teach-dlg`:
+- **Stage 1** `POST /api/days/{date}/voice-train {person, lines, remove}` → `train_lines`. Each line of `MIN_TRAIN_LINE_SECONDS` (2 s) or more with no overlap is embedded by `LineVoices`. That is only the community-1 wespeaker model, the same embedding space as the diarization centroids, cached per day by merged.wav mtime. The embeddings go into the transcript's `line_prints`, and each person gets one weighted-mean voiceprint per day with `label='lines'`. `process_day` carries `line_prints` over and calls `restore_line_prints` after `assign()`, so a re-transcribe keeps them.
+- **Stage 2** `POST /api/days/{date}/voice-similar {person}` → `similar_lines`: lines of the day scoring `LINE_MATCH_THRESHOLD` (0.45) or more against the person, and at least `LINE_MATCH_MARGIN` (0.2) above their current speaker. Lines scoring 0.6 or more come pre-ticked. Ticked lines move through `replaceLines`; moved suggestions are not trained on.
+- **Calibration:** on a scratch copy of 2026-10-01 with 15 of Kenzie's lines moved to Lily, it found 11 of them plus 1 wrong line, and other people got no suggestions. Lines of about 1 s score 0.2–0.5 even against the right person.
+
 **Speakers and people:**
 - **Day-only relabel:** `relabel_speaker(date, old, new, lines=None)`, exposed as `POST /api/days/{date}/relabel`, changes the speaker on one day's lines (trashed lines included) and nothing else: no voiceprints, no other days. That was the user's choice for "who is this voice". Undo passes the exact `lines` returned, so a person who already existed on that day isn't relabelled too.
   - A later re-transcribe carries these names over through `names_from_previous`, at which point that day's voiceprint gets stored under the chosen name.
