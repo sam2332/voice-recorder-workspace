@@ -102,6 +102,7 @@
   .app:not(.is-home) .home { display: none !important; }
   .home { flex: 1; overflow-y: auto; padding: 28px 24px 48px; }
   .home-inner { max-width: 760px; margin: 0 auto; display: grid; gap: 18px; }
+  .home-inner > * { min-width: 0; }   /* wide grids scroll inside their card, not the page */
   .home h2.hello { margin: 0; font-size: 24px; }
   .home .lead { margin: 2px 0 6px; color: var(--muted); }
   .card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 20px 22px; box-shadow: var(--shadow); }
@@ -161,6 +162,23 @@
   .heat .sq.new { box-shadow: inset 0 0 0 1.5px var(--warn); }
   .heat .sq.today { outline: 1.5px solid var(--muted); outline-offset: 1px; }
   .heat .sq.future { visibility: hidden; }
+  .speaker-row { margin-bottom: 6px; }
+  .who-row { padding: 0 10px 0 32px; }
+  .who-row select, .who-row input { width: 100%; padding: 4px 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); font-size: 12.5px; color: var(--text); }
+  details.person summary { display: flex; align-items: center; gap: 12px; cursor: pointer; list-style: none; }
+  details.person summary::-webkit-details-marker { display: none; }
+  .person .avatar { flex: none; }
+  .person-info { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+  .person-name { font-weight: 600; font-size: 16px; }
+  .person-meta { font-size: 13px; color: var(--muted); }
+  .person-days { display: grid; gap: 8px; margin-top: 14px; }
+  .pday { display: grid; grid-template-columns: 110px 1fr; gap: 10px; align-items: start; }
+  .pday-date { text-align: left; border: 0; background: transparent; font-weight: 600; padding: 4px 0; color: var(--accent); }
+  .pday-date:hover { text-decoration: underline; }
+  .precs { display: flex; flex-wrap: wrap; gap: 6px; }
+  .prec { border: 1px solid var(--border); background: var(--surface-2); border-radius: 8px; padding: 4px 10px; font-size: 13px; }
+  .prec:hover { border-color: var(--accent); }
+  .prec span { color: var(--muted); }
   .heat-foot { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 8px; font-size: 12px; color: var(--muted); }
   .legend { display: inline-flex; align-items: center; gap: 3px; }
   .legend .sq.l0 { background: var(--surface-2); } .legend .sq.l1 { background: color-mix(in srgb, var(--accent) 30%, var(--surface-2)); }
@@ -288,6 +306,17 @@
   .line-btn svg { width: 16px; height: 16px; }
   .cue-row:hover .line-btn, .cue-row:focus-within .line-btn { opacity: 1; }
   .line-btn:hover { background: var(--danger-soft); color: var(--danger); }
+  .line-btn.edit:hover { background: var(--accent-soft); color: var(--accent); }
+  .edited-tag { font-size: 11px; font-style: italic; color: var(--muted); margin-left: 8px; }
+  .line-editor { flex: 1; display: grid; gap: 8px; padding: 4px 0 10px; }
+  .line-editor textarea {
+    width: 100%; resize: vertical; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--accent);
+    background: var(--bg); color: var(--text); font: inherit; line-height: 1.55; outline: none;
+  }
+  .editor-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .editor-bar select, .editor-bar input { padding: 4px 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface); font-size: 13px; }
+  .editor-bar .grow { flex: 1; }
+  .editor-bar .hint { font-size: 12px; color: var(--muted); }
   .line-btn.keep:hover { background: color-mix(in srgb, var(--ok) 16%, transparent); color: var(--ok); }
   @media (hover: none) { .line-btn { opacity: .45; } }
   .cue-row.noise .cue { color: var(--muted); font-style: italic; }
@@ -503,6 +532,10 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11 12 4l9 7"/><path d="M5 10v10h14V10"/></svg>
         Home &amp; sync <span class="dot hidden" id="lib-home-dot" title="Recorder connected"></span>
       </button>
+      <button class="lib-home server-only" id="lib-people">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7M18 14a6.5 6.5 0 0 1 3.5 6"/></svg>
+        People
+      </button>
       <div class="lib-actions server-only hidden" id="lib-actions">
         <button class="btn small" id="process-all"></button>
       </div>
@@ -570,7 +603,7 @@
       <section id="spk-section">
         <h2>Speakers</h2>
         <div id="speakers"></div>
-        <div class="note">Click to show/hide · double-click to rename.<br>Same person listed twice? Rename one to the other's name to merge them.</div>
+        <div class="note">Use the list under each voice to say who it is <b>on this day</b> (two voices can be the same person). Click a name to hide/show; double-click to rename everywhere.</div>
       </section>
       <section class="server-only" id="redo-section">
         <h2>Speaker detection</h2>
@@ -845,6 +878,7 @@
 
   function updateNav() {
     $('lib-home').classList.toggle('active', state.view === 'home');
+    $('lib-people').classList.toggle('active', state.view === 'people');
     const i = state.library.findIndex(d => d.date === state.date);
     // Library is newest first, so "previous" (older) is further down the list
     $('prev-day').disabled = i < 0 || i >= state.library.length - 1;
@@ -855,8 +889,10 @@
     const target = state.library[i + (dir < 0 ? 1 : -1)];
     if (target) go(target.date);
   }
-  function go(date) {
+  function go(date, seekTo) {
     if (!date) { if (location.hash) history.pushState(null, '', location.pathname); showHome(); return; }
+    if (seekTo !== undefined) state.pendingSeek = seekTo;   // jump to this moment once the day is open
+    if (date === 'people') { if (location.hash !== '#people') location.hash = 'people'; else showPeople(); return; }
     if (location.hash.slice(1) !== date) location.hash = date;  // hashchange opens it
     else openDay(date);
   }
@@ -1041,20 +1077,19 @@
   }
 
   // GitHub-style activity grid: one square per day, weeks as columns, shaded by recordings that day
-  function activityCard() {
-    const iso = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-    const byDate = Object.fromEntries(state.library.map(d => [d.date, d]));
+  // GitHub-style grid: one square per day, weeks across, days of the week down.
+  // counts: {YYYY-MM-DD: n}; info(date) -> {title, cls} for squares that have something; onClick(date)
+  const isoDay = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  function heatGrid(counts, { title, cls, onClick, levels = [1, 3, 6] } = {}) {
     const now = new Date(); now.setHours(0, 0, 0, 0);
-    // Run to the latest recording too, in case the recorder's clock is ahead of this computer's
-    const latest = state.library.length ? toDate(state.library[0].date) : now;
-    const today = latest > now ? latest : now;
+    // Run to the latest day too, in case the recorder's clock is ahead of this computer's
+    const latest = Object.keys(counts).sort().pop();
+    const today = latest && toDate(latest) > now ? toDate(latest) : now;
     const start = new Date(today); start.setDate(start.getDate() - 52 * 7 - today.getDay());  // a Sunday, ~1 year back
-    const level = n => !n ? 0 : n === 1 ? 1 : n <= 3 ? 2 : n <= 6 ? 3 : 4;
-
-    const c = card('cal', 'Recording activity');
+    const level = n => !n ? 0 : n <= levels[0] ? 1 : n <= levels[1] ? 2 : n <= levels[2] ? 3 : 4;
     const grid = el('div', 'heat');
     ['', 'Mon', '', 'Wed', '', 'Fri', ''].forEach((t, i) => { const w = el('span', 'wd', t); w.style.gridRow = i + 2; grid.append(w); });
-    let lastMonth = -1, days = 0, recs = 0, streak = 0, best = 0;
+    let lastMonth = -1, days = 0, total = 0, streak = 0, best = 0;
     for (let w = 0, d = new Date(start); d <= today || d.getDay() !== 0; w++) {
       for (let dow = 0; dow < 7; dow++, d.setDate(d.getDate() + 1)) {
         if (dow === 0 && d.getMonth() !== lastMonth && d.getDate() <= 7) {
@@ -1063,35 +1098,130 @@
           m.style.gridColumn = `${w + 2} / span 3`;
           grid.append(m);
         }
-        const key = iso(d), info = byDate[key], n = info?.recordings || 0;
-        const sq = el('button', `sq l${level(n)}` + (info ? ' has' : '') + (info?.status === 'pending' ? ' new' : '')
-          + (key === iso(now) ? ' today' : '') + (d > today ? ' future' : ''));
+        const key = isoDay(d), n = counts[key] || 0;
+        const sq = el('button', `sq l${level(n)}` + (n ? ' has' : '') + (n && cls ? ' ' + cls(key) : '')
+          + (key === isoDay(now) ? ' today' : '') + (d > today ? ' future' : ''));
         sq.style.gridColumn = w + 2; sq.style.gridRow = dow + 2;
         const when = d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
-        sq.title = info
-          ? `${when}: ${plural(n, 'recording')}, ${fmtDur(info.duration)}` + (info.status === 'pending' ? ' (not transcribed yet)' : '')
-          : `${when}: no recordings`;
+        sq.title = n ? `${when}: ${title(key, n)}` : `${when}: nothing`;
         sq.setAttribute('aria-label', sq.title);
-        if (info) sq.onclick = () => go(key); else sq.tabIndex = -1;
+        if (n && onClick) sq.onclick = () => onClick(key); else sq.tabIndex = -1;
         grid.append(sq);
-        if (d <= today) {
-          if (n) { days++; recs += n; streak++; best = Math.max(best, streak); } else streak = 0;
-        }
+        if (d <= today) { if (n) { days++; total += n; streak++; best = Math.max(best, streak); } else streak = 0; }
       }
     }
     const wrap = el('div', 'heat-wrap'); wrap.append(grid);
-    c.append(el('p', null, days ? `${plural(recs, 'recording')} on ${plural(days, 'day')} in the last year · longest run ${plural(best, 'day')} in a row` : 'Days you record on will light up here.'));
-    c.append(wrap);
-    const foot = el('div', 'heat-foot');
+    requestAnimationFrame(() => { wrap.scrollLeft = wrap.scrollWidth; });   // most recent weeks in view
+    return { wrap, days, total, best };
+  }
+
+  function heatLegend(extra) {
     const legend = el('span', 'legend'); legend.append('Less ');
-    for (let i = 0; i <= 4; i++) { const k = el('span', 'sq heat-k'); k.className = `sq l${i}`; legend.append(k); }
+    for (let i = 0; i <= 4; i++) legend.append(el('span', `sq l${i}`));
     legend.append(' More');
-    const nk = el('span', 'newkey'); legend.append(nk, 'not transcribed');
-    foot.append(el('span', null, 'Click a day to open it'), legend);
+    if (extra) legend.append(el('span', 'newkey'), extra);
+    return legend;
+  }
+
+  function activityCard() {
+    const byDate = Object.fromEntries(state.library.map(d => [d.date, d]));
+    const counts = Object.fromEntries(state.library.map(d => [d.date, d.recordings || 0]));
+    const c = card('cal', 'Recording activity');
+    const g = heatGrid(counts, {
+      title: (k, n) => `${plural(n, 'recording')}, ${fmtDur(byDate[k].duration)}` + (byDate[k].status === 'pending' ? ' (not transcribed yet)' : ''),
+      cls: k => byDate[k]?.status === 'pending' ? 'new' : '',
+      onClick: k => go(k),
+    });
+    c.append(el('p', null, g.days ? `${plural(g.total, 'recording')} on ${plural(g.days, 'day')} in the last year · longest run ${plural(g.best, 'day')} in a row` : 'Days you record on will light up here.'));
+    c.append(g.wrap);
+    const foot = el('div', 'heat-foot');
+    foot.append(el('span', null, 'Click a day to open it'), heatLegend('not transcribed'));
     c.append(foot);
-    // Start scrolled to the most recent weeks on narrow screens
-    requestAnimationFrame(() => { wrap.scrollLeft = wrap.scrollWidth; });
     return c;
+  }
+
+  // ---------- People: everyone, the recordings they're in, the days they were heard ----------
+  async function showPeople(focus) {
+    if (state.view === 'day') savePosition();
+    state.view = 'people';
+    state.date = null;
+    state.openToken++;
+    audio.pause();
+    $('app').classList.add('is-home');
+    $('title').textContent = 'People';
+    document.title = 'People · Recorder Playback';
+    closeDrawers(); renderLibrary(); updateNav();
+    $('home').scrollTop = 0;
+    $('home-inner').replaceChildren(el('div', 'note', 'Gathering everyone from your transcripts…'));
+    try { state.people = (await api('/api/people')).people; }
+    catch (e) { $('home-inner').replaceChildren(el('div', 'error-box', `Couldn't load people: ${e.message}`)); return; }
+    if (state.view === 'people') renderPeople(focus);
+  }
+
+  function renderPeople(focus) {
+    const people = state.people || [];
+    $('subtitle').textContent = `${plural(people.length, 'person')} across your transcripts`.replace('persons', 'people');
+    const frag = document.createDocumentFragment();
+    const head = el('div');
+    head.append(el('h2', 'hello', 'People'),
+      el('p', 'lead', 'Everyone named in your transcripts: the recordings they’re in and the days they were heard. Name voices from a day’s Speakers panel.'));
+    frag.append(head);
+    if (!people.length) {
+      const c = card('mic', 'No people yet');
+      c.append(el('p', null, 'Once a day is transcribed, the voices in it show up here.'));
+      frag.append(c);
+    }
+    people.forEach((p, i) => {
+      const c = el('details', 'card person');
+      c.open = focus ? p.name === focus : i < 3;
+      const sum = el('summary');
+      const av = el('span', 'avatar', initials(displayName(p.name)));
+      av.style.background = PALETTE[i % PALETTE.length];
+      const info = el('span', 'person-info');
+      info.append(el('span', 'person-name', displayName(p.name)),
+        el('span', 'person-meta', [plural(p.days.length, 'day'), plural(p.recordings, 'recording'), `${fmtDur(p.seconds)} talking`,
+          p.days.length > 1 ? `${shortDate(p.first_seen)} – ${shortDate(p.last_seen)}` : shortDate(p.last_seen)].join(' · ')));
+      sum.append(av, info);
+      if (!p.voiceprints) {
+        const tag = el('span', 'chip', 'name only'); tag.title = 'Named by you on a day; the voice itself is recognised under another name';
+        sum.append(tag);
+      }
+      c.append(sum);
+
+      // Their own activity grid: darker = more talking that day
+      const secs = Object.fromEntries(p.days.map(d => [d.date, Math.max(1, Math.round(d.seconds / 60))]));
+      const byDate = Object.fromEntries(p.days.map(d => [d.date, d]));
+      const g = heatGrid(secs, {
+        title: (k, n) => `${fmtDur(byDate[k].seconds)} talking in ${plural(byDate[k].recordings.length, 'recording')}`,
+        onClick: k => go(k), levels: [2, 10, 30],
+      });
+      c.append(g.wrap);
+      const foot = el('div', 'heat-foot');
+      foot.append(el('span', null, `Seen on ${plural(g.days, 'day')} in the last year · longest run ${plural(g.best, 'day')}`), heatLegend());
+      c.append(foot);
+
+      // Every recording they're in, newest day first
+      const list = el('div', 'person-days');
+      for (const d of p.days) {
+        const row = el('div', 'pday');
+        const dl = el('button', 'pday-date', shortDate(d.date)); dl.title = `Open ${longDate(d.date)}`;
+        dl.onclick = () => go(d.date);
+        const recs = el('div', 'precs');
+        for (const r of d.recordings) {
+          const b = el('button', 'prec');
+          b.append(el('b', null, clock(r.recorded_at) || r.name), el('span', null, ` ${fmtDur(r.seconds)} · ${plural(r.lines, 'line')}`));
+          b.title = `Open ${shortDate(d.date)} at ${displayName(p.name)}’s first line in this recording`;
+          b.onclick = () => go(d.date, r.first_line);
+          recs.append(b);
+        }
+        row.append(dl, recs);
+        list.append(row);
+      }
+      c.append(list);
+      frag.append(c);
+    });
+    $('home-inner').replaceChildren(frag);
+    if (focus) requestAnimationFrame(() => [...document.querySelectorAll('.person')].find(x => x.open)?.scrollIntoView({ block: 'start' }));
   }
 
   // Forms are reused between refreshes so half-made choices aren't wiped by the 5-second poll
@@ -1229,7 +1359,8 @@
     $('app').classList.remove('hidden');
     renderLibrary();
     const want = decodeURIComponent(location.hash.slice(1));
-    if (want && libItem(want)) openDay(want);
+    if (want === 'people' && state.server) showPeople();
+    else if (want && libItem(want)) openDay(want);
     else if (state.server) { history.replaceState(null, '', location.pathname); showHome(); }
     else openDay(state.library[0].date);   // file mode has no home page
   }
@@ -1250,6 +1381,8 @@
       try { data = await api(`/api/days/${encodeURIComponent(date)}`); }
       catch (e) { toast(`Couldn't load ${shortDate(date)}: ${e.message}`); return; }
       if (token !== state.openToken) return;  // the user already picked another day
+      // Everyone the voice database knows, for the line editor's "who said it" picker
+      api('/api/speakers').then(r => { state.allSpeakers = r.speakers; }).catch(() => {});
     } else {
       data = state.files[date].data;
       fileAudio = state.files[date].audio;
@@ -1303,6 +1436,11 @@
     renderRecordings();
     renderStats();
     renderTimeline(); updateProgress(); updateNow();
+    if (state.pendingSeek != null && isReady()) {
+      const t = state.pendingSeek; state.pendingSeek = null;
+      const jump = () => { seek(t); document.querySelector('.cue.active')?.scrollIntoView({ block: 'center' }); };
+      audio.readyState >= 1 ? jump() : audio.addEventListener('loadedmetadata', jump, { once: true });
+    }
   }
 
   // People who said something real (a voice that only produced noise lines doesn't count)
@@ -1336,7 +1474,8 @@
     $('banner-text').textContent = busy
       ? (job.status === 'queued' ? 'Waiting to re-transcribe this day…' : `Re-transcribing this day… ${job.label}${pct}. The transcript below updates when it's done.`)
       : job?.status === 'failed' ? `Re-transcribing failed: ${job.error}`
-      : `${plural(n, 'new recording')} from this day ${n === 1 ? "isn't" : "aren't"} in the transcript yet.`;
+      : `${plural(n, 'new recording')} from this day ${n === 1 ? "isn't" : "aren't"} in the transcript yet.`
+        + (lib?.edited ? ' You’ve edited this day, so it won’t re-transcribe by itself.' : '');
     $('banner-btn').classList.toggle('hidden', !!busy);
     $('banner-btn').textContent = job?.status === 'failed' ? 'Try again' : 'Re-transcribe';
   }
@@ -1532,8 +1671,9 @@
     for (const s of state.segments) { if (s.noise) continue; const d = Math.max(0, s.end - s.start); talk[s.speaker] = (talk[s.speaker] || 0) + d; total += d; }
     const list = Object.keys(talk).sort((a, b) => talk[b] - talk[a]);
     $('speakers').replaceChildren(...list.map(spk => {
+      const wrap = el('div', 'speaker-row');
       const b = el('button', 'speaker' + (state.hidden.has(spk) ? ' off' : ''));
-      b.title = `${displayName(spk)}: ${fmtDur(talk[spk])} talking`;
+      b.title = `${displayName(spk)}: ${fmtDur(talk[spk])} talking. Click to hide/show, double-click to rename everywhere`;
       const dot = el('span', 'dot'); dot.style.background = state.colors[spk];
       const pct = total ? Math.round(talk[spk] / total * 100) : 0;
       const bar = el('span', 'bar'); const fill = el('i'); fill.style.width = pct + '%'; fill.style.background = state.colors[spk]; bar.append(fill);
@@ -1548,8 +1688,53 @@
         }, 220);
       };
       b.ondblclick = () => { clearTimeout(clickTimer); rename(spk); };
-      return b;
+      wrap.append(b);
+      if (state.server) wrap.append(whoPicker(spk));
+      return wrap;
     }));
+  }
+
+  // "Who is this?" for one voice on this day: pick anyone the app knows, or a new name
+  function whoPicker(spk) {
+    const box = el('div', 'who-row');
+    const sel = el('select'); sel.title = 'Who is this voice? (changes this day only)';
+    sel.setAttribute('aria-label', `Who is ${displayName(spk)}?`);
+    const names = [...new Set([spk, ...(state.allSpeakers || []), ...Object.keys(state.colors)])].filter(n => n && n !== 'Unknown' || n === spk);
+    names.forEach(n => { const o = el('option', null, n === spk ? `${displayName(n)} (this voice)` : displayName(n)); o.value = n; sel.append(o); });
+    const nw = el('option', null, 'New person…'); nw.value = '__new__'; sel.append(nw);
+    sel.value = spk;
+    const input = el('input'); input.placeholder = 'Name, then Enter'; input.classList.add('hidden');
+    const apply = name => {
+      name = (name || '').trim();
+      if (!name || name === spk) { sel.value = spk; input.classList.add('hidden'); sel.classList.remove('hidden'); return; }
+      relabelVoice(spk, name);
+    };
+    sel.onchange = () => {
+      if (sel.value === '__new__') { sel.classList.add('hidden'); input.classList.remove('hidden'); input.focus(); }
+      else apply(sel.value);
+    };
+    input.onkeydown = e => {
+      if (e.key === 'Enter') { e.preventDefault(); apply(input.value); }
+      if (e.key === 'Escape') { e.preventDefault(); apply(''); }
+    };
+    input.onblur = () => { if (!input.classList.contains('hidden')) apply(''); };
+    box.append(sel, input);
+    return box;
+  }
+
+  async function relabelVoice(from, to) {
+    const date = state.date;
+    const post = body => api(`/api/days/${date}/relabel`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    let r;
+    try { r = await post({ old: from, new: to }); } catch (e) { toast(e.message); return; }
+    await openDay(date, { keepPosition: true });
+    api('/api/speakers').then(x => { state.allSpeakers = x.speakers; }).catch(() => {});
+    toast(`${displayName(from)} is ${displayName(to)} on this day`, { action: 'Undo', onAction: async () => {
+      try { await post({ old: to, new: from, lines: r.changed }); } catch (e) { toast(e.message); return; }
+      if (state.date === date) await openDay(date, { keepPosition: true });
+      toast('Undone'); refreshLibrary();
+    } });
+    refreshLibrary();
   }
 
   function renderTranscript() {
@@ -1608,7 +1793,13 @@
       const row = el('div', 'cue-row' + (s.noise ? ' noise' : ''));
       row.append(cue);
       if (s.noise) cue.append(el('span', 'noise-tag', 'likely noise'));
+      if (s.edited) cue.append(el('span', 'edited-tag', 'edited'));
       if (state.server) {
+        const pen = el('button', 'line-btn edit');
+        pen.title = 'Edit this line'; pen.setAttribute('aria-label', 'Edit this line');
+        pen.append(svg('<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>'));
+        pen.onclick = () => openEditor(s, row);
+        row.append(pen);
         if (s.noise) {
           const keep = el('button', 'line-btn keep');
           keep.title = 'Not noise: keep this line'; keep.setAttribute('aria-label', 'Keep this line');
@@ -1648,6 +1839,98 @@
   }
 
   function reindex() { state.segments.forEach((s, i) => s.i = i); }
+
+  // ---------- Editing lines: words, who said it, split, join ----------
+  const plainLine = x => ({ start: x.start, end: x.end, speaker: x.speaker, text: x.text, ...(x.edited ? { edited: true } : {}) });
+
+  // Swap `old` lines for `neu` lines (edit / speaker / split / join), instantly, saved, with Undo
+  async function replaceLines(old, neu, msg) {
+    const date = state.date;
+    const oldC = old.map(plainLine), newC = neu.map(plainLine);
+    const gone = new Set(old);
+    state.segments = state.segments.filter(x => !gone.has(x)).concat(newC.map(x => ({ ...x }))).sort((a, b) => a.start - b.start);
+    for (const x of newC) if (!state.colors[x.speaker]) state.colors[x.speaker] = PALETTE[Object.keys(state.colors).length % PALETTE.length];
+    reindex();
+    state.editing = null;
+    renderSpeakers(); renderTranscript(); renderTimeline(); renderStats();
+    const post = (from, to) => api(`/api/days/${date}/lines`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'replace', items: from.map(x => ({ start: x.start, text: x.text })), new: to }),
+    });
+    try { await post(oldC, newC); }
+    catch (e) { toast(`Couldn't save that: ${e.message}`); if (state.date === date) openDay(date, { keepPosition: true }); return; }
+    toast(msg, { action: 'Undo', onAction: async () => {
+      try { await post(newC, oldC); } catch (e) { toast(e.message); return; }
+      if (state.date === date) await openDay(date, { keepPosition: true });
+      toast('Undone'); refreshLibrary();
+    } });
+    refreshLibrary();
+  }
+
+  function openEditor(s, row) {
+    if (state.editing) renderTranscript();   // only one line open at a time
+    row = document.querySelector(`.cue[data-i="${s.i}"]`)?.closest('.cue-row') || row;
+    audio.pause();
+    state.editing = s;
+    const box = el('div', 'line-editor');
+    const ta = el('textarea'); ta.value = s.text; ta.rows = Math.max(2, Math.ceil(s.text.length / 70));
+    ta.setAttribute('aria-label', 'Line text');
+
+    // Who said it: everyone seen today + everyone in the voice database + a new name
+    const who = el('select'); who.title = 'Who said this line';
+    const names = [...new Set([...Object.keys(state.colors), ...(state.allSpeakers || [])])].filter(Boolean);
+    names.forEach(n => { const o = el('option', null, displayName(n)); o.value = n; who.append(o); });
+    const nw = el('option', null, 'New person…'); nw.value = '__new__'; who.append(nw);
+    who.value = s.speaker;
+    const newName = el('input'); newName.placeholder = 'Name'; newName.classList.add('hidden');
+    who.onchange = () => { newName.classList.toggle('hidden', who.value !== '__new__'); if (who.value === '__new__') newName.focus(); };
+    const speaker = () => who.value === '__new__' ? newName.value.trim() : who.value;
+    const tidy = t => t.replace(/\s+/g, ' ').trim();
+
+    const idx = state.segments.indexOf(s);
+    const next = state.segments[idx + 1];
+    const close = () => { state.editing = null; renderTranscript(); };
+    const save = () => {
+      const text = tidy(ta.value), sp = speaker();
+      if (!text) { toast('A line can’t be empty. Use the bin to remove it.'); return; }
+      if (!sp) { toast('Type the new person’s name'); newName.focus(); return; }
+      if (text === s.text && sp === s.speaker) { close(); return; }
+      replaceLines([s], [{ ...s, text, speaker: sp, edited: true }],
+        sp !== s.speaker && text === s.text ? `Moved to ${displayName(sp)}` : 'Line saved');
+    };
+    const split = () => {
+      const text = ta.value, pos = ta.selectionStart;
+      const left = tidy(text.slice(0, pos)), right = tidy(text.slice(pos));
+      if (!left || !right) { toast('Put the cursor where the line should split, then press Split'); ta.focus(); return; }
+      // Split the time in proportion to where the cursor is in the text
+      const t = Math.round((s.start + (s.end - s.start) * pos / Math.max(text.length, 1)) * 100) / 100;
+      const sp = speaker() || s.speaker;
+      replaceLines([s], [{ start: s.start, end: t, speaker: sp, text: left, edited: true },
+                         { start: t, end: s.end, speaker: sp, text: right, edited: true }], 'Line split in two');
+    };
+    const join = () => {
+      if (!next) return;
+      replaceLines([s, next], [{ start: s.start, end: Math.max(s.end, next.end), speaker: speaker() || s.speaker,
+                                 text: tidy(`${ta.value} ${next.text}`), edited: true }], 'Lines joined');
+    };
+    const b = (label, cls, fn, title) => { const x = el('button', 'btn small ' + cls, label); x.type = 'button'; x.onclick = fn; if (title) x.title = title; return x; };
+    const joinBtn = b('Join with next', '', join,
+      next ? `Add the next line ("${next.text.slice(0, 40)}${next.text.length > 40 ? '…' : ''}") to this one` : 'This is the last line');
+    joinBtn.disabled = !next;
+    const bar = el('div', 'editor-bar');
+    bar.append(who, newName,
+      b('Split at cursor', '', split, 'Split this line into two where the text cursor is'), joinBtn,
+      el('span', 'grow'), el('span', 'hint', 'Enter to save · Esc to cancel'),
+      b('Cancel', '', close), b('Save', 'primary', save));
+    box.append(ta, bar);
+    row.replaceChildren(box);
+    const keys = e => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); save(); }
+      else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); }
+    };
+    ta.onkeydown = keys; newName.onkeydown = keys;
+    ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length);
+  }
 
   // action: 'trash' | 'keep' (flagged as noise but real). Applied instantly, saved, undoable.
   async function editLines(action, segs) {
@@ -1865,6 +2148,7 @@
   $('next-day').onclick = () => stepDay(1);
   $('refresh-btn').onclick = () => refreshLibrary(false);
   $('lib-home').onclick = () => go('');
+  $('lib-people').onclick = () => { go('people'); closeDrawers(); };
   $('brand').onclick = () => state.server && go('');
   $('brand').onkeydown = e => { if (e.key === 'Enter') $('brand').onclick(); };
   $('process-all').onclick = () => transcribe(state.library.filter(d => d.status === 'pending' && !d.job).map(d => d.date).reverse());
@@ -2066,12 +2350,16 @@
     document.querySelector(`input[name=count-mode][value=${mode}]`).checked = true;
     $('count-exact').value = hint.num_speakers || Math.max(n, 2);
     $('count-min').value = hint.min_speakers || Math.max(n + 1, 2);
-    $('process-note').textContent = libItem(date)?.status === 'ready'
-      ? 'Names you have given people are kept. Takes a few minutes for a long day.'
-      : 'You can keep browsing while it runs.';
+    // Re-transcribing replaces hand edits: say so plainly before it happens
+    const edited = isCurrent ? state.segments.filter(x => x.edited).length : (libItem(date)?.edited || 0);
+    $('process-note').replaceChildren(edited
+      ? el('div', 'error-box', `You've edited ${plural(edited, 'line')} on this day. Re-transcribing replaces the whole transcript, so those edits will be lost. (Removed lines stay removed, and names you've given people are kept.)`)
+      : libItem(date)?.status === 'ready'
+        ? 'Names you have given people are kept. Takes a few minutes for a long day.'
+        : 'You can keep browsing while it runs.');
     $('process-actions').replaceChildren(
       Object.assign(el('button', 'btn', 'Cancel'), { value: 'cancel', formNoValidate: true }),
-      Object.assign(el('button', 'btn primary', 'Start'), { value: 'ok' }));
+      Object.assign(el('button', 'btn primary', edited ? 'Replace my edits and start' : 'Start'), { value: 'ok' }));
     dlg.returnValue = '';
     let clips = [];
     dlg.onclose = async () => {
@@ -2124,6 +2412,7 @@
   window.addEventListener('hashchange', () => {
     const d = decodeURIComponent(location.hash.slice(1));
     if (!d) { if (state.server && state.view !== 'home') showHome(); }
+    else if (d === 'people') { if (state.view !== 'people') showPeople(); }
     else if (d !== state.date && libItem(d)) openDay(d);
   });
   document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshLibrary(); });

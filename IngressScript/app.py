@@ -1182,10 +1182,11 @@ def overlaps_trashed(seg: dict, trashed: list[dict]) -> bool:
     return any(min(seg["end"], t["end"]) - max(seg["start"], t["start"]) >= 0.5 * d for t in trashed)
 
 
-def edit_lines(date: str, items: list[dict], action: str) -> int:
+def edit_lines(date: str, items: list[dict], action: str, new: list[dict] | None = None) -> int:
     """Viewer edits on a day's transcript. Lines are identified by start time + text.
     action: 'trash' (remove; remembered so re-transcribing won't bring them back),
-            'restore' (undo a trash), or 'keep' (it was flagged as noise but is real speech)."""
+            'restore' (undo a trash), 'keep' (it was flagged as noise but is real speech), or
+            'replace' (swap `items` for the lines in `new`: edits, speaker changes, split, join, undo)."""
     path = OUTPUT_DIR / f"{date}_transcript.json"
     same = lambda a, b: abs(a["start"] - b["start"]) < 0.02 and a["text"] == b["text"]
     with TRANSCRIPT_LOCK:
@@ -1213,9 +1214,86 @@ def edit_lines(date: str, items: list[dict], action: str) -> int:
                 if seg.get("noise") and any(same(seg, it) for it in items):
                     del seg["noise"]
                     changed += 1
+        elif action == "replace":
+            gone = [seg for seg in data["segments"] if any(same(seg, it) for it in items)]
+            if len(gone) != len(items):
+                raise ValueError("That line changed since the page loaded. Reload and try again.")
+            data["segments"] = sorted([seg for seg in data["segments"] if seg not in gone] + (new or []),
+                                      key=lambda s: s["start"])
+            changed = len(gone) + len(new or [])
         if changed:
             write_transcript(path, data)
         return changed
+
+
+def relabel_speaker(date: str, old: str, new: str, lines: list[dict] | None = None) -> list[dict]:
+    """Say who a voice is on ONE day: every line (or just `lines`) by `old` becomes `new`.
+    Other days and the voice database are untouched. Returns the lines changed (for undo)."""
+    path = OUTPUT_DIR / f"{date}_transcript.json"
+    same = lambda a, b: abs(a["start"] - b["start"]) < 0.02 and a["text"] == b["text"]
+    with TRANSCRIPT_LOCK:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        changed = []
+        for seg in data.get("segments", []) + data.get("trashed", []):
+            if seg.get("speaker") == old and (lines is None or any(same(seg, l) for l in lines)):
+                seg["speaker"] = new
+                changed.append({"start": seg["start"], "text": seg["text"]})
+        if changed:
+            write_transcript(path, data)
+        return changed
+
+
+def people_summary() -> list[dict]:
+    """Everyone named in any transcript: the days and recordings they're in and how much they talked."""
+    people: dict[str, dict] = {}
+    for path in sorted(OUTPUT_DIR.glob("*_transcript.json")) if OUTPUT_DIR.is_dir() else []:
+        try:
+            data = load_transcript(path)
+        except (OSError, json.JSONDecodeError):
+            continue
+        date = data.get("date") or path.name.removesuffix("_transcript.json")
+        sources = [s for s in data.get("sources", []) if isinstance(s, dict) and "start" in s]
+        for seg in data.get("segments", []):
+            name = seg.get("speaker")
+            if not name or name == "Unknown" or seg.get("noise"):
+                continue
+            p = people.setdefault(name, {"name": name, "seconds": 0.0, "lines": 0, "days": {}})
+            d = p["days"].setdefault(date, {"date": date, "seconds": 0.0, "lines": 0, "recordings": {}})
+            secs = max(0.0, seg["end"] - seg["start"])
+            p["seconds"] += secs; p["lines"] += 1
+            d["seconds"] += secs; d["lines"] += 1
+            # Which recording of the day this line came from
+            src = next((s for s in reversed(sources) if s["start"] <= seg["start"] + 0.01), None)
+            if src:
+                r = d["recordings"].setdefault(src["name"], {"name": src["name"], "recorded_at": src.get("recorded_at"),
+                                                             "offset": src["start"], "first_line": seg["start"],
+                                                             "seconds": 0.0, "lines": 0})
+                r["seconds"] += secs; r["lines"] += 1
+    conn = init_db()
+    try:
+        prints = dict(conn.execute("SELECT s.name, COUNT(v.id) FROM speakers s LEFT JOIN voiceprints v "
+                                   "ON v.speaker_id = s.id GROUP BY s.id").fetchall())
+    finally:
+        conn.close()
+    out = []
+    for p in people.values():
+        days = sorted(p["days"].values(), key=lambda d: d["date"], reverse=True)
+        for d in days:
+            d["seconds"] = round(d["seconds"], 1)
+            d["recordings"] = sorted(d["recordings"].values(), key=lambda r: r["offset"])
+            for r in d["recordings"]:
+                r["seconds"] = round(r["seconds"], 1)
+        out.append({"name": p["name"], "seconds": round(p["seconds"], 1), "lines": p["lines"],
+                    "days": days, "recordings": sum(len(d["recordings"]) for d in days),
+                    "first_seen": days[-1]["date"], "last_seen": days[0]["date"],
+                    "voiceprints": prints.get(p["name"], 0)})
+    return sorted(out, key=lambda p: (-len(p["days"]), -p["seconds"]))
+
+
+def has_edits(date: str) -> int:
+    """How many lines of a day's transcript were edited by hand."""
+    path = OUTPUT_DIR / f"{date}_transcript.json"
+    return sum(1 for s in load_transcript(path).get("segments", []) if s.get("edited")) if path.exists() else 0
 
 
 def load_transcript(path: Path) -> dict:
@@ -1366,6 +1444,10 @@ class Processor:
                         if self.failed_state.get(date) == snapshot(files):
                             continue
                         if (first and force) or needs_processing(date, files):
+                            # Never silently overwrite hand-edited lines: those days wait for a manual
+                            # Re-transcribe, which warns first
+                            if has_edits(date):
+                                continue
                             self.enqueue(date)
                 except Exception as e:
                     log(f"(watcher: {e})")
@@ -1489,8 +1571,9 @@ def create_app(auto_process: bool = False, force: bool = False):
         hint: dict | None = None
 
     class LinesBody(BaseModel):
-        action: str               # trash | restore | keep
+        action: str               # trash | restore | keep | replace
         items: list[dict]         # [{start, text}]
+        new: list[dict] | None = None   # replace: the lines that take their place
 
     class SettingsBody(BaseModel):
         setup_done: bool | None = None
@@ -1642,6 +1725,7 @@ def create_app(auto_process: bool = False, force: bool = False):
                         "lines": len(segs),
                         "recordings": max(len(files), len(known)),
                         "new_recordings": len({f.name for f in files} - known),
+                        "edited": sum(1 for s in segs if s.get("edited")),
                         "_source_names": list(known),
                     })
             if day["status"] == "pending":
@@ -1705,12 +1789,60 @@ def create_app(auto_process: bool = False, force: bool = False):
     @app.post("/api/days/{date}/lines")
     def lines(date: str, body: LinesBody):
         check_date(date)
-        if body.action not in ("trash", "restore", "keep"):
+        if body.action not in ("trash", "restore", "keep", "replace"):
             raise HTTPException(400, "Unknown action")
         if not (OUTPUT_DIR / f"{date}_transcript.json").is_file():
             raise HTTPException(404, f"No transcript for {date}")
         items = [{"start": float(i["start"]), "text": str(i["text"])} for i in body.items if "start" in i and "text" in i]
-        return {"changed": edit_lines(date, items, body.action)}
+        new = None
+        if body.action == "replace":
+            try:
+                new = [{"start": round(float(n["start"]), 2), "end": round(float(n["end"]), 2),
+                        "speaker": str(n["speaker"]).strip() or "Unknown", "text": str(n["text"]).strip(),
+                        **({"edited": True} if n.get("edited") else {})}
+                       for n in (body.new or [])]
+            except (KeyError, TypeError, ValueError):
+                raise HTTPException(400, "Each new line needs start, end, speaker and text")
+            if any(not n["text"] or n["end"] < n["start"] for n in new):
+                raise HTTPException(400, "A line can't be empty or end before it starts")
+        try:
+            return {"changed": edit_lines(date, items, body.action, new)}
+        except ValueError as e:
+            raise HTTPException(409, str(e))
+
+    @app.get("/api/speakers")
+    def speakers():
+        """Everyone the app knows (voice database + names used in transcripts), for the pickers."""
+        conn = init_db()
+        try:
+            names = {r[0] for r in conn.execute("SELECT name FROM speakers")}
+        finally:
+            conn.close()
+        names |= {p["name"] for p in people_summary()}
+        names.discard("Unknown")
+        return {"speakers": sorted(names, key=str.lower)}
+
+    @app.get("/api/people")
+    def people():
+        return {"people": people_summary()}
+
+    class RelabelBody(BaseModel):
+        old: str
+        new: str
+        lines: list[dict] | None = None   # only these lines (used by undo); default = all of `old`'s lines
+
+    @app.post("/api/days/{date}/relabel")
+    def relabel(date: str, body: RelabelBody):
+        check_date(date)
+        if not (OUTPUT_DIR / f"{date}_transcript.json").is_file():
+            raise HTTPException(404, f"No transcript for {date}")
+        new = body.new.strip()
+        if not new:
+            raise HTTPException(400, "The name can't be empty")
+        lines = [{"start": float(l["start"]), "text": str(l["text"])} for l in body.lines] if body.lines is not None else None
+        changed = relabel_speaker(date, body.old, new, lines)
+        log(f"{date}: '{body.old}' is '{new}' on this day ({len(changed)} lines)")
+        return {"changed": changed}
 
     @app.post("/api/speakers/rename")
     def rename(body: RenameBody):

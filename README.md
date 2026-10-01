@@ -91,8 +91,12 @@ Hover the button to see what was measured. Recordings set this way show an **Aut
 - **Details (right):**
   - Day stats, and each recording (click to jump to it).
   - Who talked how much. Click a speaker to hide or show them; double-click to rename.
-  - **Same person listed twice?** Rename one to the other's name and confirm the merge. Their lines on every day join up, and their voiceprints are pooled so future recordings match better.
+  - **Who is this voice?** Each speaker has a dropdown underneath. Pick anyone the app knows, or *New person…*, and every line by that voice **on this day** becomes that person; Undo is available. Several voices can point to the same person, and other days aren't affected.
+  - **Same person on every day?** Double-click a speaker and rename them to the other's name. That merges them everywhere and pools their voiceprints, so future recordings match better.
+- **People** (in the library, under Home & sync): everyone named in your transcripts, with how many days and recordings they're in and how much they talked. Each person has their own GitHub-style grid of the days they were heard. Click a day to open it, or click a recording to jump straight to that person's first line in it.
   - **Wrong number of people?** Use **Re-transcribe this day…** and say how many were talking ("at least 6" works best when you're not sure). Names you've given are kept.
+- **Editing lines:** hover a line and click the pencil. The line becomes a text box. Fix the words; change **who said it** (anyone the app knows, or *New person…*); **Split at cursor** to break it in two where the text cursor is; or **Join with next** to merge it with the following line. Enter saves, Esc cancels, and **Undo** appears for a few seconds. Edited lines get a small *edited* tag.
+  - **Re-transcribing an edited day:** it warns you first, then replaces the edits. Days you've edited are never re-transcribed automatically (for example when new recordings arrive); you start that yourself.
 - **Removing lines:** hover a line and click the bin, or focus it and press **Del**. **Undo** appears for a few seconds. Removed lines stay removed even if the day is re-transcribed.
 - **Clothing rustle:**
   - The scratchy sound of the mic rubbing on a shirt is turned down automatically before transcription and in playback. Voices aren't touched.

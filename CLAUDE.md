@@ -71,6 +71,20 @@ A 2.5-hour day takes about 4 minutes to diarize on the RTX 5060 Ti.
    Such lines get `"noise": true`. The viewer hides them by default, and they are excluded from talk time and the speaker count.
 7. **Save** `<date>_transcript.json` under `TRANSCRIPT_LOCK`, writing to a temp file and then renaming. It includes `speaker_hint`, which a later re-transcribe reuses, and `trashed`. New lines that overlap a trashed line by at least 50% are dropped (`overlaps_trashed`), so removed lines stay removed.
 
+**Speakers and people:**
+- **Day-only relabel:** `relabel_speaker(date, old, new, lines=None)`, exposed as `POST /api/days/{date}/relabel`, changes the speaker on one day's lines (trashed lines included) and nothing else: no voiceprints, no other days. That was the user's choice for "who is this voice". Undo passes the exact `lines` returned, so a person who already existed on that day isn't relabelled too.
+  - A later re-transcribe carries these names over through `names_from_previous`, at which point that day's voiceprint gets stored under the chosen name.
+  - The global, permanent merge is still `rename_speaker_core(merge=True)`, reached by double-click rename.
+- **People:** `people_summary()` (`GET /api/people`) aggregates every transcript, skipping noise lines and "Unknown". Each person gets per-day seconds and lines, plus the recordings they speak in (matched through `sources` offsets), with `first_line` used to seek there. `voiceprints == 0` means "name only", i.e. a name that exists only through relabels.
+- `GET /api/speakers` returns the DB names plus every transcript name, feeding both pickers.
+- **Viewer routing:** `#people` → `showPeople()`, which renders into the Home container under `.is-home`. `go(date, seekTo)` sets `state.pendingSeek`, which `openDay` applies after the audio loads. `heatGrid(counts, {title, cls, onClick, levels})` is the shared GitHub-style grid used by Home and by each person.
+
+**Text edits:**
+- `edit_lines(..., "replace", new)` swaps the identified lines for `new`, and refuses with a 409 if any of them changed since the page loaded. Edit, change speaker, split, join and undo are all client-side `replaceLines(old, new)` calls; undo is the inverse replace.
+- **Split** divides the time in proportion to where the cursor sits in the text, since word timings aren't stored.
+- Edited lines carry `edited: true`. `has_edits(date)` makes the watcher skip auto re-transcribing those days. Manual Re-transcribe warns ("Replace my edits and start") and then overwrites the edits; trashed lines and names still carry over.
+- `GET /api/speakers` feeds the editor's who-said-it picker. Moving a line to a speaker changes only the transcript, not voiceprints.
+
 **Line edits:** `edit_lines(date, items, action)` identifies a line by its start time (±0.02 s) and text. It is exposed as `POST /api/days/{date}/lines` with body `{action: trash|restore|keep, items: [{start, text}]}`. `restore` also clears the `noise` flag. All transcript writes, including rename and merge, go through `TRANSCRIPT_LOCK` and `write_transcript`.
 
 **Experiment findings on the real 2026-08-20 day:**
