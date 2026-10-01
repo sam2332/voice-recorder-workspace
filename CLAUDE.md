@@ -109,6 +109,13 @@ A 2.5-hour day takes about 4 minutes to diarize on the RTX 5060 Ti.
 - **Stale audio:** browsers cached the old 2-minute merged WAV after a day was rebuilt with more recordings. `audio_url` and `recordings` URLs now carry `?v=<mtime>`, and responses send `Cache-Control: no-cache`.
 - **Research:** DiariZen scores best among open diarizers, but needs Python 3.10, torch 2.1, a forked pyannote and non-commercial weights, so it was not adopted. pyannote community-1 plus the fixes above was the better trade-off.
 
+**Voice review (after transcribing):** `process_day` saves `voices_reviewed: false`. The library reports `needs_review` (a "Name voices" chip on Home); transcripts without the flag are treated as reviewed.
+- The first time such a day is opened, the viewer pops up `#voices-dlg` (`openVoiceReview`); the day's "Review voices…" button reopens it.
+- One card per voice, for the whole day, listing which recordings it's in. Unsure voices (no match, not `named`) are open at the top. Matched or user-named voices are folded below; "Looks right" is client-side only.
+- Snippets: `voiceSnippets` picks non-noise lines with no overlap, longest first (2–15 s preferred), 5 at a time. They play through a separate `Audio`, so the main player keeps its position.
+- Naming uses the normal `whoPicker` → `relabelVoice` (day relabel + `teach_voice`, which sets `voices[].named`).
+- "Done" posts `POST /api/days/{date}/voices/reviewed`. It is wired to the button's click: the dialog `close` event never fired in the desktop app's built-in browser.
+
 **Speakers and people:**
 - **Day-only relabel:** `relabel_speaker(date, old, new, lines=None)`, exposed as `POST /api/days/{date}/relabel`, changes the speaker on one day's lines (trashed lines included) and nothing else: no voiceprints, no other days. That was the user's choice for "who is this voice". Undo passes the exact `lines` returned, so a person who already existed on that day isn't relabelled too.
   - A later re-transcribe carries these names over through `names_from_previous`, at which point that day's voiceprint gets stored under the chosen name.

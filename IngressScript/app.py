@@ -889,7 +889,7 @@ def teach_voice(date: str, old: str, new: str, labels: list[str] | None = None) 
                    if (v.get("label") in labels if labels is not None else v.get("name") == old)]
         for v in targets:
             v["name"] = new
-            v["named"] = True
+            v["named"] = not re.match(r"(Unknown voice \d+|Speaker_\d+)$", new)   # undo back to an automatic name
         if targets:
             write_transcript(path, data)
     conn = init_db()
@@ -1265,7 +1265,7 @@ class Engine:
                         continue
                     secs = sum(max(0.0, min(b, y) - max(a, x)) for x, y in spans if x < b and y > a)
                     if secs >= need:
-                        others.append(names.get(l, "Unknown"))
+                        others.append(l)
                 return sorted(set(others))
 
             timeline = []
@@ -1279,7 +1279,8 @@ class Engine:
                     seg["noise"] = True
                 over = talking_over(line)
                 if over and not seg.get("noise"):
-                    seg["overlap"] = over
+                    seg["overlap_labels"] = over                                   # source of truth
+                    seg["overlap"] = sorted({names.get(l, "Unknown") for l in over})  # names at the time
                 timeline.append(seg)
 
             with TRANSCRIPT_LOCK:
@@ -1296,6 +1297,7 @@ class Engine:
                     "sources": describe_sources(files),
                     "segments": timeline,
                     "trashed": trashed,
+                    "voices_reviewed": False,   # the viewer opens the voice review the first time this day is opened
                     # Per voice: how sure the match was and who else it might be (viewer suggestions)
                     "voices": [{"name": names[l], "label": l, "seconds": round(voices[l][1], 1), **voice_info[l],
                                 "embedding": [round(float(x), 5) for x in unit(voices[l][0])]}
@@ -1417,6 +1419,32 @@ def edit_lines(date: str, items: list[dict], action: str, new: list[dict] | None
         return changed
 
 
+def resolve_overlap_names(data: dict) -> dict:
+    """Fill each line's "overlap" with the CURRENT names of the voices that talked over it
+    (labels -> names via the day's voices list), dropping the line's own speaker."""
+    label_name = {v["label"]: v["name"] for v in data.get("voices", []) if v.get("label")}
+    for seg in data.get("segments", []):
+        if seg.get("overlap_labels"):
+            names = {label_name.get(l, "Unknown") for l in seg["overlap_labels"]}
+            names.discard(seg.get("speaker"))
+            if names:
+                seg["overlap"] = sorted(names)
+            else:
+                seg.pop("overlap", None)
+        elif seg.get("overlap"):
+            seg["overlap"] = [n for n in seg["overlap"] if n != seg.get("speaker")]
+            if not seg["overlap"]:
+                seg.pop("overlap")
+    return data
+
+
+def rename_in_overlaps(data: dict, old: str, new: str):
+    """Older transcripts only stored names in "overlap"; keep those in step with renames."""
+    for seg in data.get("segments", []) + data.get("trashed", []):
+        if seg.get("overlap") and old in seg["overlap"]:
+            seg["overlap"] = sorted({new if n == old else n for n in seg["overlap"]})
+
+
 def relabel_speaker(date: str, old: str, new: str, lines: list[dict] | None = None) -> list[dict]:
     """Say who a voice is on ONE day: every line (or just `lines`) by `old` becomes `new`.
     Other days and the voice database are untouched. Returns the lines changed (for undo)."""
@@ -1429,6 +1457,8 @@ def relabel_speaker(date: str, old: str, new: str, lines: list[dict] | None = No
             if seg.get("speaker") == old and (lines is None or any(same(seg, l) for l in lines)):
                 seg["speaker"] = new
                 changed.append({"start": seg["start"], "text": seg["text"]})
+        if changed and lines is None:
+            rename_in_overlaps(data, old, new)   # whole voice renamed: its "talking over" tags follow
         if changed:
             write_transcript(path, data)
         return changed
@@ -1555,7 +1585,9 @@ def rename_speaker_core(old: str, new: str, merge: bool = False) -> int:
 
     # Update existing transcripts too, so old days show the new name (trashed lines included)
     pending = [p for p, d in in_transcripts.items()
-               if any(s.get("speaker") == old for s in d.get("segments", []) + d.get("trashed", []))]
+               if any(s.get("speaker") == old or old in (s.get("overlap") or [])
+                      for s in d.get("segments", []) + d.get("trashed", []))
+               or any(v.get("name") == old for v in d.get("voices", []))]
     if not old_row and not pending:
         conn.rollback()
         raise RenameError(f"No speaker named '{old}'. Run with --speakers to see the list.")
@@ -1566,6 +1598,10 @@ def rename_speaker_core(old: str, new: str, merge: bool = False) -> int:
             for seg in data.get("segments", []) + data.get("trashed", []):
                 if seg.get("speaker") == old:
                     seg["speaker"] = new
+            rename_in_overlaps(data, old, new)
+            for v in data.get("voices", []):
+                if v.get("name") == old:
+                    v["name"] = new
             write_transcript(path, data)
     return len(pending)
 
@@ -2179,6 +2215,7 @@ def create_app(auto_process: bool = False, force: bool = False):
                         "recordings": max(len(files), len(known)),
                         "new_recordings": len({f.name for f in files} - known),
                         "edited": sum(1 for s in segs if s.get("edited")),
+                        "needs_review": data.get("voices_reviewed") is False,   # older days have no flag: not nagged
                         "_source_names": list(known),
                     })
             if day["status"] == "pending":
@@ -2200,7 +2237,7 @@ def create_app(auto_process: bool = False, force: bool = False):
         check_date(date)
         path = transcript_path(date)
         if path.is_file():
-            data = dict(load_transcript(path))
+            data = resolve_overlap_names(json.loads(json.dumps(load_transcript(path))))  # copy; don't touch the cache
             audio = data.get("audio")
             # ?v= changes whenever the file is rebuilt, so the browser never plays a stale cached copy
             # (e.g. yesterday's 2-minute version of a day that now has a 35-minute recording too)
@@ -2336,6 +2373,21 @@ def create_app(auto_process: bool = False, force: bool = False):
         log(f"{date}: '{body.old}' is '{new}' on this day ({len(changed)} lines)"
             + (f"; {new}'s voice profile learned from it" if learned else ""))
         return {"changed": changed, "labels": labels, "learned": learned}
+
+    class ReviewedBody(BaseModel):
+        reviewed: bool = True
+
+    @app.post("/api/days/{date}/voices/reviewed")
+    def voices_reviewed(date: str, body: ReviewedBody):
+        check_date(date)
+        path = transcript_path(date)
+        if not path.is_file():
+            raise HTTPException(404, f"No transcript for {date}")
+        with TRANSCRIPT_LOCK:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            data["voices_reviewed"] = body.reviewed
+            write_transcript(path, data)
+        return {"reviewed": body.reviewed}
 
     @app.post("/api/speakers/rename")
     def rename(body: RenameBody):
