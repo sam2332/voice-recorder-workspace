@@ -19,11 +19,17 @@ export function voiceCard(v, member = false) {
   const dot = el('span', 'dot'); dot.style.background = state.colors[v.spk];
   head.append(dot, el('span', 'nm', displayName(v.spk)), el('span', 'meta', `${fmtDur(v.talk)} talking · ${plural(v.lines.length, 'line')}`), el('span', 'grow'));
   const sugg = voiceSuggestions(v.spk);
+  // A name kept from an earlier transcript of this day gets no `match` from the server, but its voice
+  // may still score best against that same person: then offer to confirm the name it already has.
+  const best = (state.data?.voices || []).filter(x => x.name === v.spk).flatMap(x => x.candidates || [])
+    .sort((a, b) => b.score - a.score)[0];
+  const selfScore = best && best.name === v.spk ? best.score : 0;
   let status;
   if (draft) status = el('span', 'vr-status ok', draft.kind === 'hide' ? 'Pending · hidden' : `Pending · ${displayName(draft.name)}`);
   else if (state.reviewNamed.has(v.spk) || v.named) status = el('span', 'vr-status ok', 'Named by you');
   else if (state.reviewOk.has(v.spk)) status = el('span', 'vr-status ok', 'Confirmed');
   else if (v.match > 0) status = el('span', 'vr-status ok', `Recognised · ${Math.round(v.match * 100)}%`);
+  else if (selfScore) status = el('span', 'vr-status', `Sounds like ${displayName(v.spk)} · ${Math.round(selfScore * 100)}%`);
   else if (sugg[0]) status = el('span', 'vr-status', `Sounds like ${displayName(sugg[0].name)} · ${Math.round(sugg[0].score * 100)}%`);
   else status = el('span', 'vr-status', 'New voice');
   head.append(status);
@@ -35,7 +41,7 @@ export function voiceCard(v, member = false) {
     undo.type = 'button'; head.append(undo);
   }
   const confirmable = !draft && !v.named && !state.reviewOk.has(v.spk) && !state.reviewNamed.has(v.spk);
-  if (confirmable && v.match > 0) {
+  if (confirmable && (v.match > 0 || selfScore)) {
     const ok = btn('Confirm', 'small', e => { e.preventDefault(); e.stopPropagation(); state.reviewOk.add(v.spk); renderVoiceReview(); });
     ok.type = 'button'; head.append(ok);
   } else if (confirmable && sugg[0]) {

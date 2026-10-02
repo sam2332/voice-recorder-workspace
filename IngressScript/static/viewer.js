@@ -1941,11 +1941,14 @@
     dot.style.background = state.colors[v.spk];
     head.append(dot, el("span", "nm", displayName(v.spk)), el("span", "meta", `${fmtDur(v.talk)} talking \xB7 ${plural(v.lines.length, "line")}`), el("span", "grow"));
     const sugg = voiceSuggestions(v.spk);
+    const best = (state.data?.voices || []).filter((x) => x.name === v.spk).flatMap((x) => x.candidates || []).sort((a, b) => b.score - a.score)[0];
+    const selfScore = best && best.name === v.spk ? best.score : 0;
     let status;
     if (draft) status = el("span", "vr-status ok", draft.kind === "hide" ? "Pending \xB7 hidden" : `Pending \xB7 ${displayName(draft.name)}`);
     else if (state.reviewNamed.has(v.spk) || v.named) status = el("span", "vr-status ok", "Named by you");
     else if (state.reviewOk.has(v.spk)) status = el("span", "vr-status ok", "Confirmed");
     else if (v.match > 0) status = el("span", "vr-status ok", `Recognised \xB7 ${Math.round(v.match * 100)}%`);
+    else if (selfScore) status = el("span", "vr-status", `Sounds like ${displayName(v.spk)} \xB7 ${Math.round(selfScore * 100)}%`);
     else if (sugg[0]) status = el("span", "vr-status", `Sounds like ${displayName(sugg[0].name)} \xB7 ${Math.round(sugg[0].score * 100)}%`);
     else status = el("span", "vr-status", "New voice");
     head.append(status);
@@ -1961,7 +1964,7 @@
       head.append(undo);
     }
     const confirmable = !draft && !v.named && !state.reviewOk.has(v.spk) && !state.reviewNamed.has(v.spk);
-    if (confirmable && v.match > 0) {
+    if (confirmable && (v.match > 0 || selfScore)) {
       const ok = btn("Confirm", "small", (e) => {
         e.preventDefault();
         e.stopPropagation();
