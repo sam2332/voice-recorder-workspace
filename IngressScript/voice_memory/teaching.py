@@ -68,7 +68,7 @@ def teach_voice(date: str, old: str, new: str, labels: list[str] | None = None) 
     profile, so future days recognise them. Other days' transcripts are not rewritten.
     Returns (voice labels changed, whether a sample was available to learn from)."""
     path = _state.transcript_path()(date)
-    with _state.lock()():
+    with _state.lock():
         data = json.loads(path.read_text(encoding="utf-8"))
         targets = [v for v in data.get("voices", [])
                    if (v.get("label") in labels if labels is not None else v.get("name") == old)]
@@ -157,7 +157,7 @@ def train_lines(date: str, person: str, lines: list[dict], remove: bool = False)
     path = _state.transcript_path()(date)
     skipped, todo = [], []
     if not remove:
-        with _state.lock()():
+        with _state.lock():
             segs = json.loads(path.read_text(encoding="utf-8")).get("segments", [])
         for l in lines:
             seg = next((s for s in segs if _same_line(s, l)), None)
@@ -170,7 +170,7 @@ def train_lines(date: str, person: str, lines: list[dict], remove: bool = False)
             else:
                 todo.append(seg)
         embs = line_voices.embed(date, [(s["start"], s["end"]) for s in todo])
-    with _state.lock()():
+    with _state.lock():
         data = json.loads(path.read_text(encoding="utf-8"))
         prints = [p for p in data.get("line_prints", []) if not any(_same_line(p, l) for l in (lines if remove else todo))]
         added = []
