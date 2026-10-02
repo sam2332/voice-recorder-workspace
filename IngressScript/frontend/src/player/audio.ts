@@ -10,16 +10,13 @@ import { fmt } from '../util/format';
 import { store } from '../util/store';
 import { toast } from '../util/toast';
 
-// `src` is a File (picked locally) or a URL (server mode)
-export function setAudio(src, { resume = false, quiet = false } = {}) {
+// `src` is the day's audio URL (null = this day has none)
+export function setAudio(src: string | null, { resume = false, quiet = false } = {}) {
   audio.pause();
-  if (state.audioUrl) URL.revokeObjectURL(state.audioUrl);
-  state.audioUrl = null;
   audio.removeAttribute('src');
   audio.load();
   if (src) {
-    if (typeof src === 'string') audio.src = src;
-    else audio.src = state.audioUrl = URL.createObjectURL(src);
+    audio.src = src;
     const date = state.date;
     const pos = resume ? store.get('pos:' + date, 0) : 0;
     audio.addEventListener('loadedmetadata', () => {
@@ -29,8 +26,7 @@ export function setAudio(src, { resume = false, quiet = false } = {}) {
       renderStats(); renderTimeline(); updateProgress(); updateActiveSource();
     }, { once: true });
   } else if (!quiet) {
-    if (state.server) toast('The audio file for this day is missing. Showing the transcript only.');
-    else { $('audio-name').textContent = state.data.audio || `${state.date}_merged.wav`; $('audio-dlg').showModal(); }
+    toast('The audio file for this day is missing. Showing the transcript only.');
   }
   updatePlayIcon();
 }
@@ -38,9 +34,7 @@ export function setAudio(src, { resume = false, quiet = false } = {}) {
 function needAudio() {
   if (audio.src) return false;
   if (!isReady()) { if (state.sources.length) playRaw(0); return true; }
-  if (state.server) { toast('No audio for this day.'); return true; }
-  $('audio-name').textContent = state.data.audio || `${state.date}_merged.wav`;
-  $('audio-dlg').showModal();
+  toast('No audio for this day.');
   return true;
 }
 export function togglePlay() { if (needAudio()) return; audio.paused ? audio.play() : audio.pause(); }

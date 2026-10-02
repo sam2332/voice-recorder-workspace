@@ -74,10 +74,6 @@ button:disabled {
 .hidden {
   display: none !important;
 }
-body.server .file-only,
-body:not(.server) .server-only {
-  display: none !important;
-}
 code {
   background: var(--surface-2);
   padding: 1px 6px;
@@ -150,17 +146,9 @@ code {
   text-align: center;
   padding: 48px 32px;
   background: var(--surface);
-  border: 2px dashed var(--border);
+  border: 2px solid var(--border);
   border-radius: 20px;
   box-shadow: var(--shadow);
-  transition: border-color .15s, background .15s;
-}
-body.server .drop {
-  border-style: solid;
-}
-.drop.over {
-  border-color: var(--accent);
-  background: var(--accent-soft);
 }
 .drop h1 {
   margin: 12px 0 6px;
@@ -180,11 +168,6 @@ body.server .drop {
   gap: 10px;
   justify-content: center;
   flex-wrap: wrap;
-}
-.drop .hint {
-  margin-top: 20px;
-  font-size: 13px;
-  color: var(--muted);
 }
 
 /* src/styles/layout.css */

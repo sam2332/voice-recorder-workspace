@@ -7,14 +7,13 @@ import { openDay } from './day/open';
 import { playRaw, updateActiveSource } from './day/recordings';
 import { closeDrawers, openDrawer } from './drawers';
 import { exportTxt } from './export';
-import { ingest } from './file-mode';
 import { showHome } from './home/home';
 import { go, refreshLibrary, stepDay } from './library/library';
 import { transcribe } from './library/queue';
 import { showMeetings } from './meetings/page';
 import { showOverview } from './overview/data';
 import { showPeople } from './people/page';
-import { savePosition, seek, setAudio, setRate, togglePlay } from './player/audio';
+import { savePosition, seek, setRate, togglePlay } from './player/audio';
 import { syncActive, updateJump, updateNow, updatePlayIcon, updateProgress } from './player/sync';
 import { openVoiceReview } from './review/dialog';
 import { askTranscribe } from './transcribe/dialog';
@@ -24,11 +23,6 @@ import { store } from './util/store';
 import { toast } from './util/toast';
 
 export function init(): void {
-  $('open-folder').onclick = () => $('folder-input').click();
-  $('open-files').onclick = () => $('files-input').click();
-  $('close-btn').onclick = () => $('folder-input').click();
-  $('folder-input').onchange = e => { ingest([...(e.target as AnyEl).files]); (e.target as AnyEl).value = ''; };
-  $('files-input').onchange = e => { ingest([...(e.target as AnyEl).files]); (e.target as AnyEl).value = ''; };
   $('export-btn').onclick = exportTxt;
   $('help-btn').onclick = () => $('help-dlg').showModal();
   $('library-toggle').onclick = () => openDrawer('library');
@@ -65,16 +59,6 @@ export function init(): void {
     else if (d !== state.date && libItem(d)) openDay(d);
   });
   document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshLibrary(); });
-
-  $('audio-skip').onclick = () => $('audio-dlg').close();
-  $('audio-pick').onclick = () => $('audio-input').click();
-  $('audio-input').onchange = e => {
-    const f = (e.target as AnyEl).files[0]; (e.target as AnyEl).value = '';
-    if (!f) return;
-    state.files[state.date].audio = f;
-    $('audio-dlg').close();
-    setAudio(f);
-  };
 
   $('noise-toggle').onclick = () => { state.showNoise = !state.showNoise; renderTranscript(); };
   $('noise-trash').onclick = () => editLines('trash', state.segments.filter(s => s.noise));

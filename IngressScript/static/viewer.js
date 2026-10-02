@@ -41,7 +41,6 @@
       state = {
         server: false,
         library: [],
-        files: {},
         date: null,
         data: null,
         segments: [],
@@ -54,7 +53,6 @@
         rawIdx: -1,
         matches: [],
         matchIdx: -1,
-        audioUrl: null,
         duration: 0,
         userScrolledAt: 0,
         openToken: 0,
@@ -482,13 +480,10 @@
   // src/player/audio.ts
   function setAudio(src, { resume = false, quiet = false } = {}) {
     audio.pause();
-    if (state.audioUrl) URL.revokeObjectURL(state.audioUrl);
-    state.audioUrl = null;
     audio.removeAttribute("src");
     audio.load();
     if (src) {
-      if (typeof src === "string") audio.src = src;
-      else audio.src = state.audioUrl = URL.createObjectURL(src);
+      audio.src = src;
       const date = state.date;
       const pos = resume ? store.get("pos:" + date, 0) : 0;
       audio.addEventListener("loadedmetadata", () => {
@@ -504,11 +499,7 @@
         updateActiveSource();
       }, { once: true });
     } else if (!quiet) {
-      if (state.server) toast("The audio file for this day is missing. Showing the transcript only.");
-      else {
-        $("audio-name").textContent = state.data.audio || `${state.date}_merged.wav`;
-        $("audio-dlg").showModal();
-      }
+      toast("The audio file for this day is missing. Showing the transcript only.");
     }
     updatePlayIcon();
   }
@@ -518,12 +509,7 @@
       if (state.sources.length) playRaw(0);
       return true;
     }
-    if (state.server) {
-      toast("No audio for this day.");
-      return true;
-    }
-    $("audio-name").textContent = state.data.audio || `${state.date}_merged.wav`;
-    $("audio-dlg").showModal();
+    toast("No audio for this day.");
     return true;
   }
   function togglePlay() {
@@ -1114,9 +1100,7 @@
       card2.append(el("div", "error-box", job.error));
     }
     const actions = el("div", "actions");
-    if (!state.server) {
-      card2.append(el("p", "note", "Run python app.py to transcribe it."));
-    } else if (status === "pending" || status === "failed") {
+    if (status === "pending" || status === "failed") {
       const b = el("button", "btn primary", status === "failed" ? "Try again" : "Transcribe this day");
       b.onclick = () => askTranscribe(status === "failed" ? "Try again" : "Transcribe");
       actions.append(b);
@@ -1463,231 +1447,211 @@
     }
   });
 
-  // src/meetings/picker.ts
-  function openMeetingPicker(segs, what) {
-    if (!segs.length) {
-      toast("There are no lines to add");
-      return;
-    }
-    const items = segs.map((s) => ({ date: state.date, start: s.start, text: s.text }));
-    const dlg = $("meeting-dlg"), list = $("meeting-list"), name = $("meeting-new");
-    $("meeting-title").textContent = `${what} \xB7 ${plural(items.length, "line")}`;
-    name.value = "";
-    const refresh = async () => {
-      await loadMeetings();
-      draw();
-      if (state.view === "day" && !state.editing) renderTranscript();
-    };
-    const draw = () => {
-      const ms = state.meetings || [];
-      list.replaceChildren(...ms.length ? ms.map((m) => {
-        const all = items.every((it) => hasMark(m, it));
-        const row = el("div", "item");
-        row.append(el("span", "nm", m.name), el("span", "muted", plural(m.lines, "line")));
-        const b = el("button", "btn small" + (all ? "" : " primary"), all ? "Remove" : "Add");
-        b.type = "button";
-        b.onclick = async () => {
-          try {
-            await jsonPost(`/api/meetings/${m.id}/items`, all ? { remove: items } : { add: items });
-          } catch (e) {
-            toast(e.message);
-            return;
-          }
-          toast(all ? `Removed from ${m.name}` : `Added to ${m.name}`);
-          refresh();
-        };
-        row.append(b);
-        return row;
-      }) : [el("div", "note", "No meetings yet. Create the first one below.")]);
-    };
-    const create = async () => {
-      const n = name.value.trim();
-      if (!n) {
-        name.focus();
-        return;
-      }
+  // src/rename.ts
+  function rename(spk) {
+    const dlg = $("rename-dlg"), input = $("rename-input");
+    input.value = displayName(spk);
+    dlg.onclose = async () => {
+      if (dlg.returnValue !== "ok") return;
+      const v = input.value.trim();
+      if (!v || v === displayName(spk)) return;
       try {
-        await jsonPost("/api/meetings", { name: n, items });
+        const target = Object.keys(state.colors).find((k) => displayName(k).toLowerCase() === v.toLowerCase() && k !== spk) || v;
+        const send = (merge) => api("/api/speakers/rename", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ old: spk, new: target, merge })
+        });
+        let r, merged = false;
+        try {
+          r = await send(false);
+        } catch (e) {
+          if (e.status !== 409) throw e;
+          $("merge-text").textContent = `${displayName(target)} already exists. Merge ${displayName(spk)} into ${displayName(target)}? All of ${displayName(spk)}'s lines on every day become ${displayName(target)}, and their voiceprints are pooled so future recordings match better.`;
+          const ok = await new Promise((res) => {
+            const d = $("merge-dlg");
+            d.onclose = () => res(d.returnValue === "ok");
+            d.returnValue = "";
+            d.showModal();
+          });
+          if (!ok) return;
+          r = await send(true);
+          merged = true;
+        }
+        await refreshLibrary();
+        await openDay(state.date, { keepPosition: true });
+        toast(merged ? `Merged into ${displayName(target)}` : `Renamed to ${v} in ${plural(r.updated, "transcript")}`);
       } catch (e) {
         toast(e.message);
-        return;
-      }
-      toast(`Created \u201C${n}\u201D`);
-      name.value = "";
-      refresh();
-    };
-    $("meeting-create").onclick = create;
-    name.onkeydown = (e) => {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        create();
       }
     };
-    draw();
     dlg.showModal();
-    loadMeetings().then(draw);
+    input.select();
   }
-  var init_picker = __esm({
-    "src/meetings/picker.ts"() {
+  var init_rename = __esm({
+    "src/rename.ts"() {
       init_dom();
       init_state();
-      init_data();
-      init_render2();
+      init_helpers();
+      init_open();
+      init_library();
       init_api();
-      init_elements();
       init_format();
       init_toast();
     }
   });
 
-  // src/speakers/who-picker.ts
-  function whoPicker(spk, reviewMode = false) {
-    const box = el("div", "who-row");
-    const sel = el("select");
-    sel.title = "Who is this voice? (changes this day only)";
-    sel.setAttribute("aria-label", `Who is ${displayName(spk)}?`);
-    const names = [.../* @__PURE__ */ new Set([spk, ...state.allSpeakers || [], ...Object.keys(state.colors)])].filter((n) => n && !n.startsWith("Unknown") || n === spk);
-    const sugg = voiceSuggestions(spk);
-    const self = el("option", null, `${displayName(spk)} (this voice)`);
-    self.value = spk;
-    sel.append(self);
-    if (sugg.length) {
-      const g = el("optgroup");
-      g.label = "Suggested by voice";
-      sugg.forEach((c) => {
-        const o = el("option", null, `${displayName(c.name)} \xB7 ${Math.round(c.score * 100)}% match`);
-        o.value = c.name;
-        g.append(o);
-      });
-      sel.append(g);
-    }
-    const everyone = el("optgroup");
-    everyone.label = "Everyone";
-    names.filter((n) => n !== spk).forEach((n) => {
-      const o = el("option", null, displayName(n));
-      o.value = n;
-      everyone.append(o);
-    });
-    sel.append(everyone);
-    const nw = el("option", null, "New person\u2026");
-    nw.value = "__new__";
-    sel.append(nw);
-    const tvg = el("optgroup");
-    tvg.label = "TV / YouTube (learned, kept, not a person)";
-    (state.tvNames || []).forEach((n) => {
-      const o = el("option", null, `TV: ${n}`);
-      o.value = "tv:" + n;
-      tvg.append(o);
-    });
-    const tvNew = el("option", null, "New TV channel / show\u2026");
-    tvNew.value = "__tvnew__";
-    tvg.append(tvNew);
-    const hide = el("option", null, "Just hide (don\u2019t learn)");
-    hide.value = "__hide__";
-    tvg.append(hide);
-    sel.append(tvg);
-    const draft = reviewMode && state.reviewDraft.get(spk);
-    if (draft) {
-      const value = draft.kind === "hide" ? "__hide__" : draft.kind === "tv" ? "tv:" + draft.name : draft.name;
-      if (![...sel.options].some((o) => o.value === value)) {
-        const option = el("option", null, draft.kind === "hide" ? "Just hide (don\u2019t learn)" : displayName(draft.name));
-        option.value = value;
-        sel.append(option);
-      }
-      sel.value = value;
-    } else sel.value = spk;
-    const input = el("input");
-    input.placeholder = "Name, then Enter";
-    input.classList.add("hidden");
-    let tvMode = false;
-    const assign = (kind, name) => {
-      if (reviewMode) stageVoiceReview(spk, kind, name);
-      else if (kind === "tv") tvVoice(spk, name);
-      else if (kind === "hide") hideVoice(spk);
-      else relabelVoice(spk, name);
-    };
-    const apply = (name) => {
-      name = (name || "").trim();
-      if (!name || name === spk) {
-        if (reviewMode && state.reviewDraft.has(spk)) {
-          state.reviewDraft.delete(spk);
-          state.reviewNamed.delete(spk);
-          renderVoiceReview();
-          return;
-        }
-        sel.value = spk;
-        input.classList.add("hidden");
-        sel.classList.remove("hidden");
-        return;
-      }
-      assign(tvMode ? "tv" : "person", name);
-    };
-    const restoreDraftSelection = () => {
-      if (!reviewMode) return;
-      const draft2 = state.reviewDraft.get(spk);
-      if (!draft2) {
-        sel.value = spk;
-        return;
-      }
-      const value = draft2.kind === "hide" ? "__hide__" : draft2.kind === "tv" ? "tv:" + draft2.name : draft2.name;
-      if ([...sel.options].some((o) => o.value === value)) sel.value = value;
-      else sel.value = spk;
-    };
-    sel.onchange = () => {
-      if (sel.value === "__new__" || sel.value === "__tvnew__") {
-        tvMode = sel.value === "__tvnew__";
-        input.placeholder = tvMode ? "Channel or show, then Enter" : "Name, then Enter";
-        sel.classList.add("hidden");
-        input.classList.remove("hidden");
-        input.focus();
-      } else if (sel.value === "__hide__") {
-        assign("hide", "");
-      } else if (sel.value.startsWith("tv:")) {
-        const n = sel.value.slice(3);
-        assign("tv", n);
-      } else if (sel.value === spk) {
-        if (reviewMode) {
-          state.reviewDraft.delete(spk);
-          state.reviewNamed.delete(spk);
-          renderVoiceReview();
-        }
-      } else apply(sel.value);
-    };
-    input.onkeydown = (e) => {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        apply(input.value);
-      }
-      if (e.key === "Escape") {
-        e.preventDefault();
-        restoreDraftSelection();
-        input.classList.add("hidden");
-        sel.classList.remove("hidden");
-      }
-    };
-    input.onblur = () => {
-      if (!input.classList.contains("hidden")) apply(input.value || "");
-    };
-    box.append(sel, input);
-    const v = (state.data?.voices || []).filter((x) => x.name === spk);
-    const match = Math.max(0, ...v.map((x) => x.match || 0));
-    if (match) box.append(el("div", "who-note", `Recognised by voice \xB7 ${Math.round(match * 100)}% match`));
-    else if (sugg[0]) {
-      const maybe = el("button", "btn small maybe", `Maybe ${displayName(sugg[0].name)}? ${Math.round(sugg[0].score * 100)}%`);
-      maybe.type = "button";
-      maybe.title = `This voice sounds most like ${displayName(sugg[0].name)}. Click to use that name on this day.`;
-      maybe.onclick = () => assign("person", sugg[0].name);
-      box.append(maybe);
-    }
-    return box;
+  // src/speakers/voice-actions.ts
+  function stageVoiceReview(spk, kind, name) {
+    state.reviewDraft.set(spk, { kind, name });
+    state.reviewNamed.add(spk);
+    renderVoiceReview();
   }
-  var init_who_picker = __esm({
-    "src/speakers/who-picker.ts"() {
+  function voiceSuggestions(spk) {
+    const best = {};
+    for (const v of state.data?.voices || []) {
+      if (v.name !== spk) continue;
+      for (const c of v.candidates || []) if (c.name !== spk) best[c.name] = Math.max(best[c.name] || 0, c.score);
+    }
+    return Object.entries(best).map(([name, score]) => ({ name, score })).sort((a, b) => b.score - a.score);
+  }
+  async function hideVoice(spk) {
+    const date = state.date;
+    const post = (body) => api(`/api/days/${date}/voice-noise`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    let r;
+    try {
+      r = await post({ speaker: spk, noise: true });
+    } catch (e) {
+      toast(e.message);
+      return;
+    }
+    await openDay(date, { keepPosition: true });
+    if ($("voices-dlg").open) {
+      state.reviewNamed.add(spk);
+      renderVoiceReview();
+    }
+    toast(`${displayName(spk)} hidden as TV / music (${plural(r.changed.length, "line")})`, { action: "Undo", onAction: async () => {
+      try {
+        await post({ speaker: spk, noise: false, lines: r.changed });
+      } catch (e) {
+        toast(e.message);
+        return;
+      }
+      if (state.date === date) await openDay(date, { keepPosition: true });
+      if ($("voices-dlg").open) {
+        state.reviewNamed.delete(spk);
+        renderVoiceReview();
+      }
+      toast("Undone");
+      refreshLibrary();
+    } });
+    refreshLibrary();
+  }
+  async function hideLine(s) {
+    const date = state.date;
+    const lines = [{ start: s.start, text: s.text }];
+    const post = (noise) => api(`/api/days/${date}/voice-noise`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ speaker: s.speaker, noise, lines }) });
+    try {
+      await post(true);
+    } catch (e) {
+      toast(e.message);
+      return;
+    }
+    state.editing = null;
+    await openDay(date, { keepPosition: true });
+    toast("Line hidden as TV / music", { action: "Undo", onAction: async () => {
+      try {
+        await post(false);
+      } catch (e) {
+        toast(e.message);
+        return;
+      }
+      if (state.date === date) await openDay(date, { keepPosition: true });
+      toast("Undone");
+      refreshLibrary();
+    } });
+    refreshLibrary();
+  }
+  async function tvVoice(spk, name) {
+    const date = state.date;
+    const json = (url, body) => api(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    let r;
+    try {
+      r = await json(`/api/days/${date}/tv-voice`, { speaker: spk, name });
+    } catch (e) {
+      toast(e.message);
+      return;
+    }
+    await openDay(date, { keepPosition: true });
+    if ($("voices-dlg").open) {
+      state.reviewNamed.add(name);
+      renderVoiceReview();
+    }
+    loadSpeakers();
+    toast(`${displayName(spk)} is TV: ${name}${r.learned ? ". Recognised on new days too" : ""}`, { action: "Undo", onAction: async () => {
+      try {
+        if (r.shown.length) await json(`/api/days/${date}/voice-noise`, { speaker: name, noise: true, lines: r.shown });
+        await json(`/api/days/${date}/relabel`, { old: name, new: spk, lines: r.changed, labels: r.labels });
+      } catch (e) {
+        toast(e.message);
+        return;
+      }
+      if (state.date === date) await openDay(date, { keepPosition: true });
+      if ($("voices-dlg").open) {
+        state.reviewNamed.delete(name);
+        renderVoiceReview();
+      }
+      loadSpeakers();
+      toast("Undone");
+      refreshLibrary();
+    } });
+    refreshLibrary();
+  }
+  async function relabelVoice(from, to) {
+    const date = state.date;
+    const post = (body) => api(`/api/days/${date}/relabel`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    let r;
+    try {
+      r = await post({ old: from, new: to });
+    } catch (e) {
+      toast(e.message);
+      return;
+    }
+    await openDay(date, { keepPosition: true });
+    if ($("voices-dlg").open) {
+      state.reviewNamed.add(to);
+      renderVoiceReview();
+    }
+    loadSpeakers();
+    toast(r.learned ? `${displayName(from)} is ${displayName(to)}. ${displayName(to)}'s voice will be recognised on new days` : `${displayName(from)} is ${displayName(to)} on this day`, { action: "Undo", onAction: async () => {
+      try {
+        await post({ old: to, new: from, lines: r.changed, labels: r.labels });
+      } catch (e) {
+        toast(e.message);
+        return;
+      }
+      if (state.date === date) await openDay(date, { keepPosition: true });
+      if ($("voices-dlg").open) {
+        state.reviewNamed.delete(to);
+        renderVoiceReview();
+      }
+      toast("Undone");
+      refreshLibrary();
+    } });
+    refreshLibrary();
+  }
+  var init_voice_actions = __esm({
+    "src/speakers/voice-actions.ts"() {
+      init_dom();
       init_state();
       init_helpers();
+      init_open();
+      init_library();
       init_dialog2();
-      init_voice_actions();
-      init_elements();
+      init_panel();
+      init_api();
+      init_format();
+      init_toast();
     }
   });
 
@@ -2215,155 +2179,229 @@
     }
   });
 
-  // src/speakers/voice-actions.ts
-  function stageVoiceReview(spk, kind, name) {
-    state.reviewDraft.set(spk, { kind, name });
-    state.reviewNamed.add(spk);
-    renderVoiceReview();
-  }
-  function voiceSuggestions(spk) {
-    const best = {};
-    for (const v of state.data?.voices || []) {
-      if (v.name !== spk) continue;
-      for (const c of v.candidates || []) if (c.name !== spk) best[c.name] = Math.max(best[c.name] || 0, c.score);
+  // src/speakers/who-picker.ts
+  function whoPicker(spk, reviewMode = false) {
+    const box = el("div", "who-row");
+    const sel = el("select");
+    sel.title = "Who is this voice? (changes this day only)";
+    sel.setAttribute("aria-label", `Who is ${displayName(spk)}?`);
+    const names = [.../* @__PURE__ */ new Set([spk, ...state.allSpeakers || [], ...Object.keys(state.colors)])].filter((n) => n && !n.startsWith("Unknown") || n === spk);
+    const sugg = voiceSuggestions(spk);
+    const self = el("option", null, `${displayName(spk)} (this voice)`);
+    self.value = spk;
+    sel.append(self);
+    if (sugg.length) {
+      const g = el("optgroup");
+      g.label = "Suggested by voice";
+      sugg.forEach((c) => {
+        const o = el("option", null, `${displayName(c.name)} \xB7 ${Math.round(c.score * 100)}% match`);
+        o.value = c.name;
+        g.append(o);
+      });
+      sel.append(g);
     }
-    return Object.entries(best).map(([name, score]) => ({ name, score })).sort((a, b) => b.score - a.score);
-  }
-  async function hideVoice(spk) {
-    const date = state.date;
-    const post = (body) => api(`/api/days/${date}/voice-noise`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    let r;
-    try {
-      r = await post({ speaker: spk, noise: true });
-    } catch (e) {
-      toast(e.message);
-      return;
-    }
-    await openDay(date, { keepPosition: true });
-    if ($("voices-dlg").open) {
-      state.reviewNamed.add(spk);
-      renderVoiceReview();
-    }
-    toast(`${displayName(spk)} hidden as TV / music (${plural(r.changed.length, "line")})`, { action: "Undo", onAction: async () => {
-      try {
-        await post({ speaker: spk, noise: false, lines: r.changed });
-      } catch (e) {
-        toast(e.message);
+    const everyone = el("optgroup");
+    everyone.label = "Everyone";
+    names.filter((n) => n !== spk).forEach((n) => {
+      const o = el("option", null, displayName(n));
+      o.value = n;
+      everyone.append(o);
+    });
+    sel.append(everyone);
+    const nw = el("option", null, "New person\u2026");
+    nw.value = "__new__";
+    sel.append(nw);
+    const tvg = el("optgroup");
+    tvg.label = "TV / YouTube (learned, kept, not a person)";
+    (state.tvNames || []).forEach((n) => {
+      const o = el("option", null, `TV: ${n}`);
+      o.value = "tv:" + n;
+      tvg.append(o);
+    });
+    const tvNew = el("option", null, "New TV channel / show\u2026");
+    tvNew.value = "__tvnew__";
+    tvg.append(tvNew);
+    const hide = el("option", null, "Just hide (don\u2019t learn)");
+    hide.value = "__hide__";
+    tvg.append(hide);
+    sel.append(tvg);
+    const draft = reviewMode && state.reviewDraft.get(spk);
+    if (draft) {
+      const value = draft.kind === "hide" ? "__hide__" : draft.kind === "tv" ? "tv:" + draft.name : draft.name;
+      if (![...sel.options].some((o) => o.value === value)) {
+        const option = el("option", null, draft.kind === "hide" ? "Just hide (don\u2019t learn)" : displayName(draft.name));
+        option.value = value;
+        sel.append(option);
+      }
+      sel.value = value;
+    } else sel.value = spk;
+    const input = el("input");
+    input.placeholder = "Name, then Enter";
+    input.classList.add("hidden");
+    let tvMode = false;
+    const assign = (kind, name) => {
+      if (reviewMode) stageVoiceReview(spk, kind, name);
+      else if (kind === "tv") tvVoice(spk, name);
+      else if (kind === "hide") hideVoice(spk);
+      else relabelVoice(spk, name);
+    };
+    const apply = (name) => {
+      name = (name || "").trim();
+      if (!name || name === spk) {
+        if (reviewMode && state.reviewDraft.has(spk)) {
+          state.reviewDraft.delete(spk);
+          state.reviewNamed.delete(spk);
+          renderVoiceReview();
+          return;
+        }
+        sel.value = spk;
+        input.classList.add("hidden");
+        sel.classList.remove("hidden");
         return;
       }
-      if (state.date === date) await openDay(date, { keepPosition: true });
-      if ($("voices-dlg").open) {
-        state.reviewNamed.delete(spk);
-        renderVoiceReview();
-      }
-      toast("Undone");
-      refreshLibrary();
-    } });
-    refreshLibrary();
-  }
-  async function hideLine(s) {
-    const date = state.date;
-    const lines = [{ start: s.start, text: s.text }];
-    const post = (noise) => api(`/api/days/${date}/voice-noise`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ speaker: s.speaker, noise, lines }) });
-    try {
-      await post(true);
-    } catch (e) {
-      toast(e.message);
-      return;
-    }
-    state.editing = null;
-    await openDay(date, { keepPosition: true });
-    toast("Line hidden as TV / music", { action: "Undo", onAction: async () => {
-      try {
-        await post(false);
-      } catch (e) {
-        toast(e.message);
+      assign(tvMode ? "tv" : "person", name);
+    };
+    const restoreDraftSelection = () => {
+      if (!reviewMode) return;
+      const draft2 = state.reviewDraft.get(spk);
+      if (!draft2) {
+        sel.value = spk;
         return;
       }
-      if (state.date === date) await openDay(date, { keepPosition: true });
-      toast("Undone");
-      refreshLibrary();
-    } });
-    refreshLibrary();
+      const value = draft2.kind === "hide" ? "__hide__" : draft2.kind === "tv" ? "tv:" + draft2.name : draft2.name;
+      if ([...sel.options].some((o) => o.value === value)) sel.value = value;
+      else sel.value = spk;
+    };
+    sel.onchange = () => {
+      if (sel.value === "__new__" || sel.value === "__tvnew__") {
+        tvMode = sel.value === "__tvnew__";
+        input.placeholder = tvMode ? "Channel or show, then Enter" : "Name, then Enter";
+        sel.classList.add("hidden");
+        input.classList.remove("hidden");
+        input.focus();
+      } else if (sel.value === "__hide__") {
+        assign("hide", "");
+      } else if (sel.value.startsWith("tv:")) {
+        const n = sel.value.slice(3);
+        assign("tv", n);
+      } else if (sel.value === spk) {
+        if (reviewMode) {
+          state.reviewDraft.delete(spk);
+          state.reviewNamed.delete(spk);
+          renderVoiceReview();
+        }
+      } else apply(sel.value);
+    };
+    input.onkeydown = (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        apply(input.value);
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        restoreDraftSelection();
+        input.classList.add("hidden");
+        sel.classList.remove("hidden");
+      }
+    };
+    input.onblur = () => {
+      if (!input.classList.contains("hidden")) apply(input.value || "");
+    };
+    box.append(sel, input);
+    const v = (state.data?.voices || []).filter((x) => x.name === spk);
+    const match = Math.max(0, ...v.map((x) => x.match || 0));
+    if (match) box.append(el("div", "who-note", `Recognised by voice \xB7 ${Math.round(match * 100)}% match`));
+    else if (sugg[0]) {
+      const maybe = el("button", "btn small maybe", `Maybe ${displayName(sugg[0].name)}? ${Math.round(sugg[0].score * 100)}%`);
+      maybe.type = "button";
+      maybe.title = `This voice sounds most like ${displayName(sugg[0].name)}. Click to use that name on this day.`;
+      maybe.onclick = () => assign("person", sugg[0].name);
+      box.append(maybe);
+    }
+    return box;
   }
-  async function tvVoice(spk, name) {
-    const date = state.date;
-    const json = (url, body) => api(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    let r;
-    try {
-      r = await json(`/api/days/${date}/tv-voice`, { speaker: spk, name });
-    } catch (e) {
-      toast(e.message);
-      return;
-    }
-    await openDay(date, { keepPosition: true });
-    if ($("voices-dlg").open) {
-      state.reviewNamed.add(name);
-      renderVoiceReview();
-    }
-    loadSpeakers();
-    toast(`${displayName(spk)} is TV: ${name}${r.learned ? ". Recognised on new days too" : ""}`, { action: "Undo", onAction: async () => {
-      try {
-        if (r.shown.length) await json(`/api/days/${date}/voice-noise`, { speaker: name, noise: true, lines: r.shown });
-        await json(`/api/days/${date}/relabel`, { old: name, new: spk, lines: r.changed, labels: r.labels });
-      } catch (e) {
-        toast(e.message);
-        return;
-      }
-      if (state.date === date) await openDay(date, { keepPosition: true });
-      if ($("voices-dlg").open) {
-        state.reviewNamed.delete(name);
-        renderVoiceReview();
-      }
-      loadSpeakers();
-      toast("Undone");
-      refreshLibrary();
-    } });
-    refreshLibrary();
-  }
-  async function relabelVoice(from, to) {
-    const date = state.date;
-    const post = (body) => api(`/api/days/${date}/relabel`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    let r;
-    try {
-      r = await post({ old: from, new: to });
-    } catch (e) {
-      toast(e.message);
-      return;
-    }
-    await openDay(date, { keepPosition: true });
-    if ($("voices-dlg").open) {
-      state.reviewNamed.add(to);
-      renderVoiceReview();
-    }
-    loadSpeakers();
-    toast(r.learned ? `${displayName(from)} is ${displayName(to)}. ${displayName(to)}'s voice will be recognised on new days` : `${displayName(from)} is ${displayName(to)} on this day`, { action: "Undo", onAction: async () => {
-      try {
-        await post({ old: to, new: from, lines: r.changed, labels: r.labels });
-      } catch (e) {
-        toast(e.message);
-        return;
-      }
-      if (state.date === date) await openDay(date, { keepPosition: true });
-      if ($("voices-dlg").open) {
-        state.reviewNamed.delete(to);
-        renderVoiceReview();
-      }
-      toast("Undone");
-      refreshLibrary();
-    } });
-    refreshLibrary();
-  }
-  var init_voice_actions = __esm({
-    "src/speakers/voice-actions.ts"() {
-      init_dom();
+  var init_who_picker = __esm({
+    "src/speakers/who-picker.ts"() {
       init_state();
       init_helpers();
-      init_open();
-      init_library();
       init_dialog2();
-      init_panel();
+      init_voice_actions();
+      init_elements();
+    }
+  });
+
+  // src/meetings/picker.ts
+  function openMeetingPicker(segs, what) {
+    if (!segs.length) {
+      toast("There are no lines to add");
+      return;
+    }
+    const items = segs.map((s) => ({ date: state.date, start: s.start, text: s.text }));
+    const dlg = $("meeting-dlg"), list = $("meeting-list"), name = $("meeting-new");
+    $("meeting-title").textContent = `${what} \xB7 ${plural(items.length, "line")}`;
+    name.value = "";
+    const refresh = async () => {
+      await loadMeetings();
+      draw();
+      if (state.view === "day" && !state.editing) renderTranscript();
+    };
+    const draw = () => {
+      const ms = state.meetings || [];
+      list.replaceChildren(...ms.length ? ms.map((m) => {
+        const all = items.every((it) => hasMark(m, it));
+        const row = el("div", "item");
+        row.append(el("span", "nm", m.name), el("span", "muted", plural(m.lines, "line")));
+        const b = el("button", "btn small" + (all ? "" : " primary"), all ? "Remove" : "Add");
+        b.type = "button";
+        b.onclick = async () => {
+          try {
+            await jsonPost(`/api/meetings/${m.id}/items`, all ? { remove: items } : { add: items });
+          } catch (e) {
+            toast(e.message);
+            return;
+          }
+          toast(all ? `Removed from ${m.name}` : `Added to ${m.name}`);
+          refresh();
+        };
+        row.append(b);
+        return row;
+      }) : [el("div", "note", "No meetings yet. Create the first one below.")]);
+    };
+    const create = async () => {
+      const n = name.value.trim();
+      if (!n) {
+        name.focus();
+        return;
+      }
+      try {
+        await jsonPost("/api/meetings", { name: n, items });
+      } catch (e) {
+        toast(e.message);
+        return;
+      }
+      toast(`Created \u201C${n}\u201D`);
+      name.value = "";
+      refresh();
+    };
+    $("meeting-create").onclick = create;
+    name.onkeydown = (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        create();
+      }
+    };
+    draw();
+    dlg.showModal();
+    loadMeetings().then(draw);
+  }
+  var init_picker = __esm({
+    "src/meetings/picker.ts"() {
+      init_dom();
+      init_state();
+      init_data();
+      init_render2();
       init_api();
+      init_elements();
       init_format();
       init_toast();
     }
@@ -2716,76 +2754,6 @@
       init_parts();
       init_elements();
       init_format();
-    }
-  });
-
-  // src/rename.ts
-  function rename(spk) {
-    const dlg = $("rename-dlg"), input = $("rename-input");
-    input.value = displayName(spk);
-    const cmd = (n) => `python app.py --rename ${spk} "${n}"`;
-    $("rename-cmd").textContent = cmd(input.value);
-    input.oninput = () => $("rename-cmd").textContent = cmd(input.value.trim());
-    dlg.onclose = async () => {
-      if (dlg.returnValue !== "ok") return;
-      const v = input.value.trim();
-      if (!v || v === displayName(spk)) return;
-      if (state.server) {
-        try {
-          const target = Object.keys(state.colors).find((k) => displayName(k).toLowerCase() === v.toLowerCase() && k !== spk) || v;
-          const send = (merge) => api("/api/speakers/rename", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ old: spk, new: target, merge })
-          });
-          let r, merged = false;
-          try {
-            r = await send(false);
-          } catch (e) {
-            if (e.status !== 409) throw e;
-            $("merge-text").textContent = `${displayName(target)} already exists. Merge ${displayName(spk)} into ${displayName(target)}? All of ${displayName(spk)}'s lines on every day become ${displayName(target)}, and their voiceprints are pooled so future recordings match better.`;
-            const ok = await new Promise((res) => {
-              const d = $("merge-dlg");
-              d.onclose = () => res(d.returnValue === "ok");
-              d.returnValue = "";
-              d.showModal();
-            });
-            if (!ok) return;
-            r = await send(true);
-            merged = true;
-          }
-          await refreshLibrary();
-          await openDay(state.date, { keepPosition: true });
-          toast(merged ? `Merged into ${displayName(target)}` : `Renamed to ${v} in ${plural(r.updated, "transcript")}`);
-        } catch (e) {
-          toast(e.message);
-        }
-        return;
-      }
-      if (v === spk.replace(/_/g, " ")) delete state.renames[spk];
-      else state.renames[spk] = v;
-      store.set("renames", state.renames);
-      renderSpeakers();
-      renderTranscript();
-      renderLibrary();
-      toast(`Renamed to ${v}`);
-    };
-    dlg.showModal();
-    input.select();
-  }
-  var init_rename = __esm({
-    "src/rename.ts"() {
-      init_dom();
-      init_state();
-      init_helpers();
-      init_open();
-      init_library();
-      init_panel();
-      init_render2();
-      init_api();
-      init_format();
-      init_store();
-      init_toast();
     }
   });
 
@@ -3995,10 +3963,10 @@
     else if (want === "overview" && state.server) showOverview();
     else if (want === "meetings" && state.server) showMeetings();
     else if (want && libItem(want)) openDay(want);
-    else if (state.server) {
+    else {
       history.replaceState(null, "", location.pathname);
       showHome();
-    } else openDay(state.library[0].date);
+    }
   }
   function normalizeSources(src) {
     return (src || []).map((s) => typeof s === "string" ? { name: s, start: null, duration: null, recorded_at: fromName(s), url: null } : { ...s, recorded_at: s.recorded_at || fromName(s.name) });
@@ -4008,35 +3976,30 @@
     state.view = "day";
     $("app").classList.remove("is-home");
     const token = ++state.openToken;
-    let data, fileAudio = null;
-    if (state.server) {
-      try {
-        data = await api(`/api/days/${encodeURIComponent(date)}`);
-      } catch (e) {
-        toast(`Couldn't load ${shortDate(date)}: ${e.message}`);
-        return;
-      }
-      if (token !== state.openToken) return;
-      api("/api/speakers").then((r) => {
-        state.allSpeakers = r.speakers;
-        state.tvNames = r.tv || [];
-        if (state.date === date && state.view === "day") {
-          renderSpeakers();
-          if (state.tvNames.length && !state.editing) renderTranscript();
-        }
-      }).catch(() => {
-      });
-    } else {
-      data = state.files[date].data;
-      fileAudio = state.files[date].audio;
+    let data;
+    try {
+      data = await api(`/api/days/${encodeURIComponent(date)}`);
+    } catch (e) {
+      toast(`Couldn't load ${shortDate(date)}: ${e.message}`);
+      return;
     }
+    if (token !== state.openToken) return;
+    api("/api/speakers").then((r) => {
+      state.allSpeakers = r.speakers;
+      state.tvNames = r.tv || [];
+      if (state.date === date && state.view === "day") {
+        renderSpeakers();
+        if (state.tvNames.length && !state.editing) renderTranscript();
+      }
+    }).catch(() => {
+    });
     const keep = opts.keepPosition && date === state.date;
     if (!keep) savePosition();
     state.date = date;
     state.data = data;
     state.sources = normalizeSources(data.sources);
     state.segments = (data.segments || []).filter((s) => s && typeof s.start === "number").map((s, i) => ({ ...s, i, speaker: s.speaker || "Unknown", text: String(s.text || "") }));
-    state.renames = state.server ? {} : store.get("renames", {});
+    state.renames = {};
     if (!keep) state.hidden = /* @__PURE__ */ new Set();
     state.activeIdx = -1;
     state.activeSrc = -1;
@@ -4063,7 +4026,7 @@
       renderSpeakers();
       renderTranscript();
       renderBanner();
-      if (!keep) setAudio(state.server ? data.audio_url : fileAudio, { resume: true });
+      if (!keep) setAudio(data.audio_url, { resume: true });
     } else {
       $("banner").classList.add("hidden");
       state.rawIdx = -1;
@@ -4125,7 +4088,6 @@
       init_render2();
       init_api();
       init_format();
-      init_store();
       init_toast();
     }
   });
@@ -4741,110 +4703,8 @@
     }
   });
 
-  // src/file-mode.ts
-  async function ingest(files) {
-    const jsons = files.filter((f) => /\.json$/i.test(f.name) && !/(\.sources|summary|clip_levels|settings)\.json$/i.test(f.name));
-    const audios = files.filter((f) => /\.(wav|mp3|m4a|ogg|flac)$/i.test(f.name) || f.type.startsWith("audio/"));
-    if (!jsons.length) {
-      toast("No transcript (.json) found in that selection.");
-      return;
-    }
-    const days = {};
-    for (const f of jsons) {
-      let data;
-      try {
-        data = JSON.parse(await f.text());
-      } catch {
-        continue;
-      }
-      if (!data || !Array.isArray(data.segments)) continue;
-      const date = data.date || f.name.replace(/_transcript\.json$/i, "").replace(/\.json$/i, "");
-      const wanted = data.audio ? data.audio.split(/[\\/]/).pop().toLowerCase() : null;
-      const folder = (x) => (x.relPath || x.webkitRelativePath || x.name).replace(/[^\\/]*$/, "");
-      const match = audios.find((a) => folder(a) === folder(f) && a.name.toLowerCase() === wanted) || !folder(f) && audios.find((a) => a.name.toLowerCase() === wanted) || audios.find((a) => a.name.toLowerCase().startsWith(date.toLowerCase())) || (jsons.length === 1 && audios.length === 1 ? audios[0] : null);
-      days[date] = { data: { ...data, status: "ready" }, audio: match || null };
-    }
-    const dates = Object.keys(days).sort().reverse();
-    if (!dates.length) {
-      toast("Those files don't look like transcripts.");
-      return;
-    }
-    state.files = days;
-    state.library = dates.map((date) => {
-      const { data } = days[date];
-      const segs = data.segments, talk = {};
-      segs.forEach((s) => talk[s.speaker] = (talk[s.speaker] || 0) + (s.end - s.start));
-      const times = normalizeSources(data.sources).map((s) => s.recorded_at).filter(Boolean).sort();
-      return {
-        date,
-        status: "ready",
-        duration: segs.length ? segs[segs.length - 1].end : 0,
-        recordings: (data.sources || []).length,
-        speakers: Object.keys(talk).sort((a, b) => talk[b] - talk[a]),
-        first_time: times[0] || null,
-        last_time: times[times.length - 1] || null,
-        new_recordings: 0
-      };
-    });
-    showApp();
-  }
-  async function walk(entry, out) {
-    if (entry.isFile) {
-      const f = await new Promise((res, rej) => entry.file(res, rej));
-      f.relPath = entry.fullPath;
-      out.push(f);
-      return;
-    }
-    if (entry.isDirectory) {
-      const reader = entry.createReader();
-      let batch;
-      do {
-        batch = await new Promise((res, rej) => reader.readEntries(res, rej));
-        for (const e of batch) await walk(e, out);
-      } while (batch.length);
-    }
-  }
-  function init7() {
-    ["dragenter", "dragover"].forEach((t) => document.addEventListener(t, (e) => {
-      e.preventDefault();
-      if (!state.server) $("drop").classList.add("over");
-    }));
-    ["dragleave", "drop"].forEach((t) => document.addEventListener(t, (e) => {
-      e.preventDefault();
-      if (t === "drop" || !e.relatedTarget) $("drop").classList.remove("over");
-    }));
-    document.addEventListener("drop", async (e) => {
-      if (state.server) return;
-      const items = [...e.dataTransfer.items || []].map((i) => i.webkitGetAsEntry && i.webkitGetAsEntry()).filter(Boolean);
-      const files = [];
-      if (items.length) {
-        for (const it of items) await walk(it, files);
-      } else files.push(...e.dataTransfer.files);
-      if (files.length) ingest(files);
-    });
-  }
-  var init_file_mode = __esm({
-    "src/file-mode.ts"() {
-      init_dom();
-      init_state();
-      init_open();
-      init_toast();
-    }
-  });
-
   // src/events.ts
-  function init8() {
-    $("open-folder").onclick = () => $("folder-input").click();
-    $("open-files").onclick = () => $("files-input").click();
-    $("close-btn").onclick = () => $("folder-input").click();
-    $("folder-input").onchange = (e) => {
-      ingest([...e.target.files]);
-      e.target.value = "";
-    };
-    $("files-input").onchange = (e) => {
-      ingest([...e.target.files]);
-      e.target.value = "";
-    };
+  function init7() {
     $("export-btn").onclick = exportTxt;
     $("help-btn").onclick = () => $("help-dlg").showModal();
     $("library-toggle").onclick = () => openDrawer("library");
@@ -4905,16 +4765,6 @@
     document.addEventListener("visibilitychange", () => {
       if (!document.hidden) refreshLibrary();
     });
-    $("audio-skip").onclick = () => $("audio-dlg").close();
-    $("audio-pick").onclick = () => $("audio-input").click();
-    $("audio-input").onchange = (e) => {
-      const f = e.target.files[0];
-      e.target.value = "";
-      if (!f) return;
-      state.files[state.date].audio = f;
-      $("audio-dlg").close();
-      setAudio(f);
-    };
     $("noise-toggle").onclick = () => {
       state.showNoise = !state.showNoise;
       renderTranscript();
@@ -4979,7 +4829,6 @@
       init_recordings();
       init_drawers();
       init_export();
-      init_file_mode();
       init_home();
       init_library();
       init_queue();
@@ -5008,7 +4857,7 @@
     state.userScrolledAt = Date.now();
     $("search-count").textContent = `${state.matchIdx + 1} of ${state.matches.length}`;
   }
-  function init9() {
+  function init8() {
     $("search").addEventListener("input", () => {
       clearTimeout(searchTimer);
       searchTimer = setTimeout(renderTranscript, 150);
@@ -5035,7 +4884,7 @@
   });
 
   // src/keyboard.ts
-  function init10() {
+  function init9() {
     document.addEventListener("keydown", (e) => {
       if ($("app").classList.contains("hidden") || document.querySelector("dialog[open]")) return;
       if (e.ctrlKey || e.metaKey || e.altKey) return;
@@ -5114,7 +4963,6 @@
       init_actions();
       init_events();
       init_preview();
-      init_file_mode();
       init_timeline();
       init_search();
       init_keyboard();
@@ -5122,24 +4970,25 @@
       init5();
       init6();
       init4();
-      init8();
-      init2();
       init7();
+      init2();
       init();
+      init8();
       init9();
-      init10();
       setRate(store.get("rate", 1));
       audio.volume = store.get("vol", 1);
       $("vol").value = String(audio.volume);
-      if (location.protocol.startsWith("http")) {
-        document.body.classList.add("server");
-        api("/api/library").then(() => {
-          state.server = true;
-          loadSettings();
-          refreshSync();
-          refreshLibrary();
-        }).catch(() => document.body.classList.remove("server"));
-      }
+      api("/api/library").then(() => {
+        state.server = true;
+        loadSettings();
+        refreshSync();
+        refreshLibrary();
+      }).catch((e) => {
+        $("empty-title").textContent = "Can\u2019t reach the server";
+        $("empty-text").textContent = `${e.message || "No answer"}. Is app.py running?`;
+        $("empty-retry").classList.remove("hidden");
+        $("empty-retry").onclick = () => location.reload();
+      });
     }
   });
   require_main();

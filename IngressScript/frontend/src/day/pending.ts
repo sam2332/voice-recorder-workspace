@@ -35,9 +35,7 @@ export function renderPending() {
   }
 
   const actions = el('div', 'actions');
-  if (!state.server) {
-    card.append(el('p', 'note', 'Run python app.py to transcribe it.'));
-  } else if (status === 'pending' || status === 'failed') {
+  if (status === 'pending' || status === 'failed') {
     const b = el('button', 'btn primary', status === 'failed' ? 'Try again' : 'Transcribe this day');
     b.onclick = () => askTranscribe(status === 'failed' ? 'Try again' : 'Transcribe');
     actions.append(b);

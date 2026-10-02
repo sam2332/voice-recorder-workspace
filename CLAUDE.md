@@ -23,11 +23,7 @@ A personal pipeline for voice-recorder audio. It has two pieces:
   - a transcript synced to the audio;
   - a day details panel (recordings, speakers, re-transcribe).
 
-  It has two modes:
-  - **Server mode**, used when the page is loaded over `http(s)`: it adds `body.server`.
-  - **File mode**, used when opened from `file://`: the user picks or drops the `processed_daily` folder.
-
-  Elements marked `.file-only` or `.server-only` are toggled by the mode. File mode code still exists, but the page now needs the server (Jinja), so there is no standalone file to open from disk.
+  The viewer only runs from the server (it will be hosted remotely). There is no `file://` mode: the old folder-picker mode was removed on purpose. Until `/api/library` answers, the start card says "Loading…"; if it fails, it shows the error and a Try again button. `state.server` means "the library has loaded", and many functions return early until it's true.
   - All page state is the one typed `state` object in `core/state.ts`; JSON shapes from the server are in `core/types.ts`. `$('id')` returns a broad element type; narrow it with `$<HTMLCanvasElement>('id')` when needed.
   - Modules only *declare* things at load. Anything that runs at load (event wiring) goes in that module's `export function init()`, and `main.ts` calls every `init()` in order. This keeps import order from causing TDZ errors.
   - ES imports are read-only: a `let` another module needs to change must get a setter or move into `state`.
@@ -93,7 +89,6 @@ A 2.5-hour day takes about 4 minutes to diarize on the RTX 5060 Ti.
 `processed_daily/<YYYY-MM-DD>/{transcript.json, merged.wav, merged.sources.json, rustle.npy, summary.json}` plus `processed_daily/clip_levels.json`, which is shared by all days.
 - Always go through `day_dir()`, `transcript_path()`, `all_transcripts()`, `rustle_mask_path()` and `summary_path()`; never build `OUTPUT_DIR / f"{date}_..."` by hand.
 - Day audio is served at `/audio/<date>/<file>?v=<mtime>`.
-- In file mode the viewer pairs `transcript.json` with `merged.wav` *in the same folder* (`relPath` / `webkitRelativePath`), because every day's audio has the same name.
 
 **Overlapping speech:** `Engine.diarize()` calls the pyannote pipeline directly, not whisperx's wrapper, to get both of its outputs:
 - `exclusive_speaker_diarization` assigns each word to one speaker, as pyannote recommends for ASR alignment. On the real call it fixed back-channel replies ("Perfect.", "Oh, that's pretty fancy.") that had landed on the wrong person.

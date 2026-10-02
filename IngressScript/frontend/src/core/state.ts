@@ -2,10 +2,9 @@
 import type { DayData, LibraryDay, Segment, Source } from './types';
 
 export interface State {
-  server: boolean;                       // loaded over http(s) from app.py
+  server: boolean;                       // true once /api/library has answered
   view?: string;                         // 'home' | 'people' | 'overview' | 'meetings' | 'day'
   library: LibraryDay[];
-  files: Record<string, { data: DayData; audio: File | null }>;   // file mode: date -> files
   date: string | null;
   data: DayData | null;
   segments: Segment[];
@@ -18,7 +17,6 @@ export interface State {
   rawIdx: number;
   matches: HTMLElement[];        // search hits, in transcript order
   matchIdx: number;
-  audioUrl: string | null;
   duration: number;
   userScrolledAt: number;
   openToken: number;
@@ -61,12 +59,11 @@ export interface State {
 export const state: State = {
   server: false,
   library: [],
-  files: {},
   date: null, data: null,
   segments: [], sources: [],
   renames: {}, hidden: new Set(), colors: {},
   activeIdx: -1, activeSrc: -1, rawIdx: -1,
   matches: [], matchIdx: -1,
-  audioUrl: null, duration: 0, userScrolledAt: 0,
+  duration: 0, userScrolledAt: 0,
   openToken: 0, pollTimer: null,
 };

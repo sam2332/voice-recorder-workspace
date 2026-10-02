@@ -23,7 +23,6 @@ import { renderParts } from '../transcript/parts';
 import { renderTranscript } from '../transcript/render';
 import { api } from '../util/api';
 import { fromName, longDate, shortDate } from '../util/format';
-import { store } from '../util/store';
 import { toast } from '../util/toast';
 
 // The app opens on Home; a day opens only when picked (or from a #YYYY-MM-DD link)
@@ -36,8 +35,7 @@ export function showApp() {
   else if (want === 'overview' && state.server) showOverview();
   else if (want === 'meetings' && state.server) showMeetings();
   else if (want && libItem(want)) openDay(want);
-  else if (state.server) { history.replaceState(null, '', location.pathname); showHome(); }
-  else openDay(state.library[0].date);   // file mode has no home page
+  else { history.replaceState(null, '', location.pathname); showHome(); }
 }
 
 export function normalizeSources(src) {
@@ -51,23 +49,18 @@ export async function openDay(date: string, opts: { keepPosition?: boolean } = {
   state.view = 'day';
   $('app').classList.remove('is-home');
   const token = ++state.openToken;
-  let data, fileAudio = null;
-  if (state.server) {
-    try { data = await api(`/api/days/${encodeURIComponent(date)}`); }
-    catch (e) { toast(`Couldn't load ${shortDate(date)}: ${e.message}`); return; }
-    if (token !== state.openToken) return;  // the user already picked another day
-    // Everyone the voice database knows, for the line editor's "who said it" picker
-    api('/api/speakers').then(r => {
-      state.allSpeakers = r.speakers; state.tvNames = r.tv || [];
-      if (state.date === date && state.view === 'day') {
-        renderSpeakers();   // fill the pickers' "Everyone" lists
-        if (state.tvNames.length && !state.editing) renderTranscript();   // TV badges
-      }
-    }).catch(() => {});
-  } else {
-    data = state.files[date].data;
-    fileAudio = state.files[date].audio;
-  }
+  let data;
+  try { data = await api(`/api/days/${encodeURIComponent(date)}`); }
+  catch (e) { toast(`Couldn't load ${shortDate(date)}: ${e.message}`); return; }
+  if (token !== state.openToken) return;  // the user already picked another day
+  // Everyone the voice database knows, for the line editor's "who said it" picker
+  api('/api/speakers').then(r => {
+    state.allSpeakers = r.speakers; state.tvNames = r.tv || [];
+    if (state.date === date && state.view === 'day') {
+      renderSpeakers();   // fill the pickers' "Everyone" lists
+      if (state.tvNames.length && !state.editing) renderTranscript();   // TV badges
+    }
+  }).catch(() => {});
   const keep = opts.keepPosition && date === state.date;
   if (!keep) savePosition();
 
@@ -77,7 +70,7 @@ export async function openDay(date: string, opts: { keepPosition?: boolean } = {
   state.segments = (data.segments || [])
     .filter(s => s && typeof s.start === 'number')
     .map((s, i) => ({ ...s, i, speaker: s.speaker || 'Unknown', text: String(s.text || '') }));
-  state.renames = state.server ? {} : store.get('renames', {});
+  state.renames = {};
   if (!keep) state.hidden = new Set();
   state.activeIdx = -1; state.activeSrc = -1;
   closeDrawers();
@@ -105,7 +98,7 @@ export async function openDay(date: string, opts: { keepPosition?: boolean } = {
     renderSpeakers();
     renderTranscript();
     renderBanner();
-    if (!keep) setAudio(state.server ? data.audio_url : fileAudio, { resume: true });
+    if (!keep) setAudio(data.audio_url, { resume: true });
   } else {
     $('banner').classList.add('hidden');
     state.rawIdx = -1;

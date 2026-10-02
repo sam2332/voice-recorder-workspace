@@ -1,16 +1,11 @@
-<!-- Empty / start state -->
+<!-- Start state: shown until the library loads, or when the server can't be reached -->
 <div class="empty" id="empty">
   <div class="drop" id="drop">
     <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v5M8 22h8"/></svg>
     <h1 id="empty-title">Recorder Playback</h1>
-    <p id="empty-text">Open your <code>processed_daily</code> folder to listen along with the transcript.</p>
-    <div class="actions file-only">
-      <button class="btn primary" id="open-folder">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
-        Open folder
-      </button>
-      <button class="btn" id="open-files">Choose files…</button>
+    <p id="empty-text">Loading your recordings…</p>
+    <div class="actions">
+      <button class="btn primary hidden" id="empty-retry">Try again</button>
     </div>
-    <div class="hint file-only">Or drag the folder / a transcript <code>.json</code> + its <code>.wav</code> here.<br>Tip: run <code>python app.py --serve</code> to skip this step.</div>
   </div>
 </div>
