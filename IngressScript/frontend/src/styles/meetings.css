@@ -1,0 +1,27 @@
+/* ---------- Segments and meetings ---------- */
+.divider .btn { text-transform: none; font-weight: 500; letter-spacing: 0; }
+.divider.part-divider { color: var(--accent); }
+.meeting-tag { font-size: 11px; font-weight: 600; font-style: normal; color: var(--accent); margin-left: 8px; padding: 0 6px;
+  border-radius: 999px; background: var(--accent-soft); white-space: nowrap; }
+.line-btn.mt:hover, .line-btn.mt.on { background: var(--accent-soft); color: var(--accent); opacity: 1; }
+.part { border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; background: var(--bg); display: grid; gap: 8px; }
+.part + .part { margin-top: 8px; }
+.part-head { display: flex; justify-content: space-between; gap: 8px; font-weight: 600; font-size: 14px; }
+.part-meta { font-size: 12px; color: var(--muted); }
+.part-level { display: flex; align-items: center; gap: 8px; }
+.part-level .ctl { flex: 1; min-width: 0; }
+.part-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.mt-pick { display: grid; gap: 6px; max-height: 40vh; overflow-y: auto; margin-bottom: 12px; }
+.mt-pick .item { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg); }
+.mt-pick .item .nm { flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mt-new { display: flex; gap: 8px; }
+.mt-new input { flex: 1; }
+.mt-card { display: grid; gap: 8px; }
+.mt-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.mt-top h3 { margin: 0; flex: 1; min-width: 0; font-size: 17px; cursor: pointer; }
+.mt-stats { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 13px; color: var(--muted); }
+.mt-overview { font-size: 14px; line-height: 1.5; }
+.mt-line { display: grid; grid-template-columns: 112px 1fr auto; gap: 10px; align-items: baseline; padding: 6px 0; border-top: 1px solid var(--border); font-size: 14px; }
+.mt-line .who { font-weight: 600; font-size: 12.5px; }
+.mt-day { margin: 14px 0 4px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+@media (max-width: 640px) { .mt-line { grid-template-columns: 1fr auto; } .mt-line .prec { grid-column: 1; justify-self: start; } }

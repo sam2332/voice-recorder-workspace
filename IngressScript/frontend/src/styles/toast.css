@@ -1,0 +1,13 @@
+.keys { display: grid; grid-template-columns: auto 1fr; gap: 8px 16px; font-size: 14px; }
+kbd {
+  display: inline-block; min-width: 24px; text-align: center; padding: 1px 6px; border-radius: 6px;
+  border: 1px solid var(--border); border-bottom-width: 2px; background: var(--bg); font: 12px/1.6 ui-monospace, Consolas, monospace;
+}
+.toast {
+  position: fixed; left: 50%; bottom: 120px; transform: translate(-50%, 20px); opacity: 0;
+  background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 10px;
+  transition: opacity .2s, transform .2s; pointer-events: none; z-index: 100; max-width: calc(100% - 32px);
+}
+.toast.show { opacity: 1; transform: translate(-50%, 0); }
+.toast.has-action { pointer-events: auto; display: flex; align-items: center; gap: 14px; }
+.toast button { border: 0; background: transparent; color: var(--accent); font-weight: 700; padding: 2px 4px; }

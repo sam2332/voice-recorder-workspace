@@ -1,0 +1,51 @@
+/* Home view: no transcript, player or day details */
+.app.is-home main { grid-template-columns: 280px minmax(0, 1fr); }
+.app.is-home :is(.toolbar, .banner, .transcript, .pending-view, .player, .jump, #details, .day-nav, #export-btn, #details-toggle) { display: none !important; }
+.app:not(.is-home) .home { display: none !important; }
+.home { flex: 1; overflow-y: auto; padding: 28px 24px 48px; }
+.home-inner { max-width: 760px; margin: 0 auto; display: grid; gap: 18px; }
+.home-inner > * { min-width: 0; }   /* wide grids scroll inside their card, not the page */
+.home h2.hello { margin: 0; font-size: 24px; }
+.home .lead { margin: 2px 0 6px; color: var(--muted); }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 20px 22px; box-shadow: var(--shadow); }
+.card.attention { border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
+.card h3 { margin: 0 0 4px; font-size: 16px; display: flex; align-items: center; gap: 10px; }
+.card h3 svg { width: 20px; height: 20px; color: var(--accent); flex: none; }
+.card p { margin: 0; color: var(--muted); font-size: 14px; }
+.card .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+.card .progress { margin-top: 14px; }
+.sync-card { text-align: center; padding: 26px 22px; }
+.sync-card h3 { justify-content: center; font-size: 17px; }
+.sync-card .sync-what { font-size: 15px; color: var(--text); margin-top: 6px; }
+.sync-card .sync-dev { margin-top: 14px; font-weight: 600; }
+.sync-card .actions { justify-content: center; }
+.sync-card .progress { text-align: left; }
+.btn.big { font-size: 16px; font-weight: 600; padding: 12px 28px; border-radius: 12px; }
+.rec-dev { display: flex; align-items: center; gap: 14px; margin-top: 14px; padding: 12px 14px; border-radius: 12px; background: var(--surface-2); }
+.rec-dev .info { flex: 1; min-width: 0; }
+.rec-dev .name { font-weight: 600; }
+.rec-dev .meta { font-size: 13px; color: var(--muted); }
+.checks { list-style: none; padding: 0; margin: 12px 0 0; display: grid; gap: 8px; }
+.checks li { display: grid; grid-template-columns: 20px 1fr; gap: 10px; font-size: 14px; }
+.checks .ok { color: var(--ok); } .checks .bad { color: var(--warn); }
+.checks .d { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+.form { display: grid; gap: 14px; margin-top: 16px; }
+.form label.row-l { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 12px; font-size: 14px; }
+.form .hint { font-size: 12.5px; color: var(--muted); }
+.form select { padding: 7px 10px; border-radius: 10px; border: 1px solid var(--border); background: var(--bg); min-width: 170px; }
+.switch { appearance: none; width: 40px; height: 22px; border-radius: 999px; background: var(--border); position: relative; cursor: pointer; transition: background .15s; flex: none; }
+.switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: left .15s; }
+.switch:checked { background: var(--accent); } .switch:checked::after { left: 21px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; margin-top: 14px; }
+.tile { text-align: left; border: 1px solid var(--border); background: var(--surface-2); border-radius: 12px; padding: 12px 14px; }
+.tile:hover { border-color: var(--accent); }
+.tile .t1 { font-weight: 600; display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+.tile .t2 { font-size: 12.5px; color: var(--muted); margin-top: 2px; }
+details.card summary { cursor: pointer; font-weight: 600; list-style: none; display: flex; align-items: center; gap: 10px; }
+details.card summary::-webkit-details-marker { display: none; }
+details.card summary svg { width: 20px; height: 20px; color: var(--accent); }
+.lib-home { display: flex; align-items: center; gap: 10px; width: calc(100% - 16px); margin: 4px 8px 6px; padding: 9px 12px; border-radius: 12px; border: 1px solid transparent; background: transparent; font-weight: 600; text-align: left; }
+.lib-home:hover { background: var(--surface-2); }
+.lib-home.active { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 35%, transparent); }
+.lib-home svg { width: 18px; height: 18px; color: var(--accent); }
+.lib-home .dot { margin-left: auto; width: 8px; height: 8px; border-radius: 50%; background: var(--ok); }

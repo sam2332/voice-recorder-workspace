@@ -1,0 +1,32 @@
+/* ---------- Responsive ---------- */
+#library-toggle, #details-toggle { display: none; }
+.drawer { transition: transform .22s ease; }
+@media (max-width: 1279px) {
+  main { grid-template-columns: 280px minmax(0, 1fr); }
+  #details-toggle { display: inline-grid; }
+  #details {
+    position: fixed; top: var(--header-h); bottom: 0; right: 0; width: min(320px, 88vw); z-index: 30;
+    transform: translateX(105%); box-shadow: var(--shadow); border-left: 1px solid var(--border);
+  }
+  #details.open { transform: none; }
+}
+@media (max-width: 899px) {
+  main, .app.is-home main { grid-template-columns: minmax(0, 1fr); }
+  .home { padding: 20px 16px 40px; }
+  #library-toggle { display: inline-grid; }
+  .brand { display: none; }
+  #library {
+    position: fixed; top: var(--header-h); bottom: 0; left: 0; width: min(320px, 88vw); z-index: 30;
+    transform: translateX(-105%); box-shadow: var(--shadow);
+  }
+  #library.open { transform: none; }
+  .vol, .controls .now, #help-btn { display: none; }
+  .transcript, .toolbar, .player, .pending-view { padding-left: 16px; padding-right: 16px; }
+  .banner { margin-left: 16px; margin-right: 16px; }
+  .controls .time { min-width: 0; flex: 1; }
+  header { padding: 0 8px; gap: 2px; }
+  .titles h1 { font-size: 15px; }
+  .toggle { font-size: 0; gap: 0; }
+  .toggle::after { content: "Follow"; font-size: 13px; margin-left: 6px; }
+}
+@media (max-width: 420px) { .day-nav { display: none; } }

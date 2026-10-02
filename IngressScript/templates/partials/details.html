@@ -1,0 +1,27 @@
+<!-- Day details -->
+<aside class="panel drawer" id="details" aria-label="Day details">
+  <section>
+    <h2>Overview</h2>
+    <div class="stats" id="stats"></div>
+  </section>
+  <section id="rec-section">
+    <h2>Recordings</h2>
+    <div id="recordings"></div>
+  </section>
+  <section class="server-only hidden" id="parts-section">
+    <h2>Segments</h2>
+    <div id="parts"></div>
+    <div class="note">A new segment starts after 5 minutes without speech. Add one to a meeting to track it.</div>
+  </section>
+  <section id="spk-section">
+    <h2>Speakers</h2>
+    <div id="speakers"></div>
+    <div class="note">Use the list under each voice to say who it is <b>on this day</b> (two voices can be the same person). Click a name to hide/show; double-click to rename everywhere.</div>
+    <button class="btn small server-only" id="review-btn" style="width:100%;margin-top:8px">Review voices…</button>
+  </section>
+  <section class="server-only" id="redo-section">
+    <h2>Speaker detection</h2>
+    <button class="btn small" id="redo-btn" style="width:100%">Re-transcribe this day…</button>
+    <div class="note" id="redo-note">Wrong number of people? Tell it how many were talking and run it again.</div>
+  </section>
+</aside>

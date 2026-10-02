@@ -1,0 +1,14 @@
+/* ---------- Empty state ---------- */
+.empty { min-height: 100%; display: grid; place-items: center; padding: 24px; }
+.drop {
+  width: min(560px, 100%); text-align: center; padding: 48px 32px;
+  background: var(--surface); border: 2px dashed var(--border); border-radius: 20px;
+  box-shadow: var(--shadow); transition: border-color .15s, background .15s;
+}
+body.server .drop { border-style: solid; }
+.drop.over { border-color: var(--accent); background: var(--accent-soft); }
+.drop h1 { margin: 12px 0 6px; font-size: 22px; }
+.drop p { margin: 0 0 24px; color: var(--muted); }
+.drop .icon { width: 56px; height: 56px; color: var(--accent); }
+.drop .actions { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+.drop .hint { margin-top: 20px; font-size: 13px; color: var(--muted); }

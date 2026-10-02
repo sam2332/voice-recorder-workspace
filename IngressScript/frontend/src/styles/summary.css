@@ -1,0 +1,33 @@
+.summary { margin: 18px 0 8px; border: 1px solid var(--border); border-radius: 16px; background: var(--surface);
+  box-shadow: var(--shadow); overflow: hidden; }
+.summary-head { display: flex; align-items: center; gap: 10px; padding: 14px 18px; border-bottom: 1px solid var(--border);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 8%, var(--surface)), var(--surface)); }
+.summary.collapsed .summary-head { border-bottom: 0; }
+.summary-head h3 { margin: 0; font-size: 15px; display: flex; align-items: center; gap: 8px; }
+.summary-head h3 svg { width: 18px; height: 18px; color: var(--accent); }
+.summary-head .meta { font-size: 12px; color: var(--muted); flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.summary-head .icon-btn { width: 30px; height: 30px; }
+.summary-head .icon-btn svg { width: 16px; height: 16px; transition: transform .15s; }
+.summary.collapsed .summary-body { display: none; }
+.summary.collapsed .chev { transform: rotate(-90deg); }
+.summary-body { padding: 6px 22px 18px; }
+.summary-body > p.lead { color: var(--muted); margin: 12px 0; }
+.stale { display: flex; align-items: center; gap: 10px; margin: 12px 0 4px; padding: 8px 12px; border-radius: 10px; font-size: 13px;
+  background: color-mix(in srgb, var(--warn) 14%, transparent); color: var(--text); }
+.stale span { flex: 1; }
+.md { line-height: 1.6; font-size: 14.5px; }
+.md h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--accent); margin: 20px 0 6px;
+  padding-bottom: 4px; border-bottom: 1px solid var(--border); }
+.md h3 { font-size: 15px; margin: 14px 0 4px; }
+.md h4 { font-size: 14px; margin: 10px 0 2px; color: var(--muted); }
+.md p { margin: 6px 0; }
+.md ul { margin: 4px 0; padding-left: 20px; }
+.md ul ul { margin: 2px 0; }
+.md li { margin: 3px 0; }
+.md li.task { list-style: none; margin-left: -20px; display: flex; gap: 8px; align-items: flex-start; }
+.md li.task input { margin-top: 5px; accent-color: var(--accent); flex: none; cursor: pointer; }
+.md li.task.done > span { color: var(--muted); text-decoration: line-through; }
+.md code { background: var(--surface-2); padding: 1px 5px; border-radius: 4px; font-size: .92em; }
+.md .ref { border: 0; background: var(--accent-soft); color: var(--accent); border-radius: 999px; padding: 0 8px;
+  font-size: 11.5px; font-weight: 600; margin-left: 4px; cursor: pointer; white-space: nowrap; font-variant-numeric: tabular-nums; vertical-align: 1px; }
+.md .ref:hover { background: var(--accent); color: #fff; }

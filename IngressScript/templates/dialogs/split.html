@@ -1,0 +1,15 @@
+<dialog id="split-dlg" class="wide">
+  <form method="dialog">
+    <h3 id="split-title">Split this voice</h3>
+    <p class="muted" style="margin:0 0 12px">Name the people mixed into this voice, then sort lines with the keys
+      <kbd>1</kbd>–<kbd>4</kbd>. Each line plays by itself. <kbd>S</kbd> skips (it stays as it is), <kbd>Z</kbd> goes back,
+      <kbd>Space</kbd> replays, and <kbd>Enter</kbd> accepts the suggestion. After a few lines per person, “Suggest the rest” sorts lines by voice.</p>
+    <div class="split-people" id="split-people"></div>
+    <div class="split-card" id="split-card"></div>
+    <div class="split-tools" id="split-tools"></div>
+    <div class="row">
+      <button class="btn" value="cancel" id="split-cancel">Cancel</button>
+      <button class="btn primary" type="button" id="split-save">Save</button>
+    </div>
+  </form>
+</dialog>

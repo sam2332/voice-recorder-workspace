@@ -120,7 +120,7 @@ Hover the button to see what was measured. Recordings set this way show an **Aut
 
 ## Tuning
 
-These settings are at the top of `IngressScript/app.py`:
+These settings are in `IngressScript/core/config.py` (rustle, clustering, VAD) and `IngressScript/app_config.py` (voice matching):
 
 | Setting | Default | Effect |
 |---|---|---|

@@ -1,0 +1,31 @@
+/* ---------- Library ---------- */
+.lib-head { padding: 16px 16px 8px; display: flex; align-items: center; gap: 8px; position: sticky; top: 0; background: var(--surface); z-index: 1; }
+.lib-head h2 { margin: 0; flex: 1; }
+.lib-actions { padding: 0 16px 8px; }
+.lib-actions .btn { width: 100%; }
+.lib-list { padding: 0 8px 16px; }
+.month { font-size: 12px; font-weight: 600; color: var(--muted); padding: 14px 10px 6px; }
+.day-card {
+  display: block; width: 100%; text-align: left; border: 1px solid transparent; background: transparent;
+  border-radius: 12px; padding: 10px 12px; margin-bottom: 2px; position: relative;
+}
+.day-card:hover { background: var(--surface-2); }
+.day-card.active { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 35%, transparent); }
+.day-card .row { display: flex; align-items: center; gap: 8px; }
+.day-card .dname { font-weight: 600; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.day-card .meta { font-size: 12.5px; color: var(--muted); margin-top: 1px; }
+.day-card .people { font-size: 12.5px; color: var(--muted); margin-top: 4px; display: flex; align-items: center; gap: 4px; min-width: 0; }
+.day-card .people span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dots { display: inline-flex; flex: none; }
+.dots i { width: 8px; height: 8px; border-radius: 50%; margin-right: -2px; box-shadow: 0 0 0 1.5px var(--surface); }
+.chip {
+  flex: none; font-size: 11px; font-weight: 600; padding: 1px 8px; border-radius: 999px;
+  background: var(--surface-2); color: var(--muted); white-space: nowrap;
+}
+.chip.pending { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); }
+.chip.processing, .chip.queued { background: var(--accent-soft); color: var(--accent); }
+.chip.failed { background: var(--danger-soft); color: var(--danger); }
+.chip.new { background: color-mix(in srgb, var(--ok) 16%, transparent); color: var(--ok); }
+.bar-mini { height: 4px; border-radius: 2px; background: var(--surface-2); margin-top: 8px; overflow: hidden; }
+.bar-mini > i { display: block; height: 100%; background: var(--accent); transition: width .4s; }
+.lib-empty { padding: 24px 16px; color: var(--muted); font-size: 14px; }

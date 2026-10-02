@@ -8,8 +8,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A personal pipeline for voice-recorder audio. It has two pieces:
 
-- `IngressScript/app.py`: WhisperX + pyannote transcription with cross-day speaker identity. It also includes a FastAPI/uvicorn server that hosts the viewer, plus a background worker that transcribes days.
-- `IngressScript/viewer.html`: a single-file, dependency-free browser app. It has three areas:
+- **Python** (`IngressScript/`): WhisperX + pyannote transcription with cross-day speaker identity, a FastAPI/uvicorn server that hosts the viewer, and a background worker that transcribes days. `app.py` is only the CLI; the code lives in small packages, each module with a one-line docstring:
+  - `core/` config (paths, thresholds, patterns), settings (`settings.json`), paths (`day_dir()` etc.);
+  - `audio/` files, merge, rustle, levels, analysis, segments;
+  - `pipeline/` engine (`Engine.process_day`), speakers (pure helpers), noise, checks, batch (`process_all`), processor (server worker);
+  - `transcripts/` store (load/write, `TRANSCRIPT_LOCK`; importing the package wires `voice_memory`), edits, people;
+  - `llm/` ollama, markdown, summary, extract, workers; `meetings/` store, summary; `recorder_sync/`;
+  - `voice_memory/`, `storage.py`, `app_config.py` (voice DB and matching thresholds);
+  - `web/` app (`create_app`, starts the workers), models (request bodies), deps (`check_date`, `safe_file`), one `routes_*.py` per area, each exposing `build(ctx) -> APIRouter`, server (`serve`).
+
+  Imports between packages form no cycles; keep it that way (`from x import y` cycles fail at startup).
+- **Viewer** (`IngressScript/frontend/src/*.ts`, ~60 TypeScript modules): bundled by esbuild into `static/viewer.js`, with `frontend/src/styles/*.css` bundled into `static/viewer.css`. The page is `templates/viewer.html` plus `templates/partials/` and `templates/dialogs/` (Jinja includes). It has three areas:
   - a library of days;
   - a transcript synced to the audio;
   - a day details panel (recordings, speakers, re-transcribe).
@@ -18,9 +27,13 @@ A personal pipeline for voice-recorder audio. It has two pieces:
   - **Server mode**, used when the page is loaded over `http(s)`: it adds `body.server`.
   - **File mode**, used when opened from `file://`: the user picks or drops the `processed_daily` folder.
 
-  Elements marked `.file-only` or `.server-only` are toggled by the mode. All page state lives inside an IIFE, and there is no global API.
+  Elements marked `.file-only` or `.server-only` are toggled by the mode. File mode code still exists, but the page now needs the server (Jinja), so there is no standalone file to open from disk.
+  - All page state is the one typed `state` object in `core/state.ts`; JSON shapes from the server are in `core/types.ts`. `$('id')` returns a broad element type; narrow it with `$<HTMLCanvasElement>('id')` when needed.
+  - Modules only *declare* things at load. Anything that runs at load (event wiring) goes in that module's `export function init()`, and `main.ts` calls every `init()` in order. This keeps import order from causing TDZ errors.
+  - ES imports are read-only: a `let` another module needs to change must get a setter or move into `state`.
+  - `static/viewer.js` and `static/viewer.css` are build output, committed so the app runs without Node. Never edit them by hand.
 
-There is no build step, test suite or linter. The platform is Windows; use the venv at `.venv` (Python 3.12).
+There is no test suite or linter. The platform is Windows; use the venv at `.venv` (Python 3.12).
 
 ## Commands
 
@@ -29,7 +42,10 @@ There is no build step, test suite or linter. The platform is Windows; use the v
 .venv\Scripts\python IngressScript\app.py --serve --no-browser --port 5055   # viewer only, no auto-processing
 .venv\Scripts\python IngressScript\app.py --no-serve [--force] [--min-speakers N]   # batch in the terminal
 .venv\Scripts\python IngressScript\app.py --speakers | --rename OLD NEW | --merge OLD INTO
-.venv\Scripts\python -m py_compile IngressScript\app.py
+.venv\Scripts\python -m compileall -q IngressScript   # syntax check every module
+cd IngressScript\frontend; npm install                # once: typescript + esbuild
+npm run build      # tsc --noEmit (must be 0 errors), then bundle JS and CSS into ../static
+npm run watch      # rebuild viewer.js on save while working
 ```
 
 A full run needs:
@@ -172,7 +188,7 @@ A 2.5-hour day takes about 4 minutes to diarize on the RTX 5060 Ti.
 - The old single-centroid `speakers.embedding` column was migrated to a `day='legacy'` voiceprint. Legacy prints are ignored once a person has real ones, and are deleted when that person gets a new one.
 - `rename_speaker_core(old, new, merge)` raises `NameTaken` (HTTP 409) if `new` already exists. With `merge=True` it moves the voiceprints across and rewrites every transcript.
 
-**Transcript JSON contract** (`viewer.html` depends on it):
+**Transcript JSON contract** (the viewer depends on it; mirrored in `frontend/src/core/types.ts`, so update both):
 
 ```json
 {"date": "YYYY-MM-DD", "language": "en", "audio": "merged.wav", "speaker_hint": {"min_speakers": 6},

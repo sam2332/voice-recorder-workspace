@@ -1,0 +1,24 @@
+h4.sect { margin: 18px 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+.clips { display: grid; gap: 12px; max-height: 58vh; overflow-y: auto; padding-right: 4px; }
+.clip { border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; background: var(--bg); }
+.clip.flagged { border-color: color-mix(in srgb, var(--warn) 55%, transparent); }
+.clip-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.clip-head .btn { margin-left: auto; }
+.clip-issue { font-size: 13px; color: var(--muted); margin-top: 4px; }
+canvas.wave { display: block; width: 100%; height: 72px; margin: 10px 0 8px; cursor: pointer; border-radius: 6px; background: var(--surface-2); }
+.clip-ctrls { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px 18px; align-items: end; }
+.ctl { display: grid; gap: 4px; font-size: 13px; }
+.ctl-top { display: flex; justify-content: space-between; color: var(--muted); }
+.ctl-val { color: var(--text); font-variant-numeric: tabular-nums; font-weight: 600; }
+.ctl input[type=range] { width: 100%; accent-color: var(--accent); }
+.ctl select { padding: 5px 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface); }
+.sect-row { display: flex; align-items: center; gap: 10px; }
+.sect-row .btn { margin-left: auto; text-transform: none; letter-spacing: 0; }
+.wave-key { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12px; color: var(--muted); margin: -2px 0 10px; }
+.wave-key i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+.k-orig { background: var(--border); } .k-after { background: var(--accent); } .k-clip { background: var(--danger); }
+.k-fix { background: var(--warn); } .k-gate { background: var(--muted); opacity: .4; }
+.ctl.check { display: flex; align-items: center; gap: 8px; color: var(--text); cursor: pointer; }
+.choice { display: grid; gap: 10px; }
+.choice label { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.choice input[type=number] { width: 56px; padding: 4px 6px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); }

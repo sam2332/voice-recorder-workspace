@@ -1,0 +1,56 @@
+/* ---------- Dialogs / toast ---------- */
+dialog {
+  border: 1px solid var(--border); border-radius: 16px; background: var(--surface); color: var(--text);
+  padding: 24px; width: min(440px, calc(100% - 32px)); box-shadow: var(--shadow);
+}
+dialog::backdrop { background: rgba(0,0,0,.4); }
+dialog h3 { margin: 0 0 14px; }
+dialog .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 18px; }
+dialog input[type=text] { width: 100%; padding: 9px 12px; border-radius: 10px; border: 1px solid var(--border); background: var(--bg); }
+dialog.wide { width: min(940px, calc(100% - 24px)); max-height: calc(100vh - 32px); overflow: hidden; }
+/* Only the recordings list scrolls; the title, speaker count and buttons stay in view */
+dialog.wide > form { display: flex; flex-direction: column; max-height: calc(100vh - 82px); }
+dialog.wide .clips { flex: 1 1 auto; min-height: 140px; max-height: none; }
+dialog.blocked .count-section { display: none; }
+dialog.blocked { border-color: color-mix(in srgb, var(--warn) 60%, transparent); }
+/* Voice review: one card per voice, unsure ones first */
+/* Sticky footer for review dialog */
+.voices-footer {
+  position: sticky;
+  bottom: 0;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  padding-top: 16px;
+  margin-top: 8px;
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+dialog.wide .voices-footer { margin-right: 0; }
+.vr-list { display: grid; gap: 12px; overflow-y: auto; flex: 1 1 auto; min-height: 140px; padding-right: 4px; }
+.vr { border: 1px solid var(--border); border-radius: 12px; background: var(--bg); padding: 12px 14px; }
+.vr-group > .vr-member { border: 0; border-top: 1px solid var(--border); border-radius: 0; background: none; padding: 10px 0 0; margin-top: 10px; }
+.vr.unsure { border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.vr > summary { list-style: none; cursor: pointer; }
+.vr > summary::-webkit-details-marker { display: none; }
+.vr > summary::marker { display: none; }
+.vr-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.vr-head .dot { width: 12px; height: 12px; border-radius: 50%; flex: none; }
+.vr-head .nm { font-weight: 600; }
+.vr-head .meta { color: var(--muted); font-size: 12.5px; }
+.vr-head .grow { flex: 1; }
+.vr-status { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); white-space: nowrap; }
+.vr-status.ok { background: color-mix(in srgb, var(--ok) 15%, transparent); color: var(--ok); }
+.vr-recs { font-size: 12px; color: var(--muted); margin-top: 4px; }
+.vr-body { display: grid; grid-template-columns: minmax(0, 1fr) 220px; gap: 14px; margin-top: 10px; }
+.vr-body .who-row { padding: 0; }
+.vr-body .who-note { display: none; }
+.vr-snips { display: grid; gap: 4px; }
+.vr-snip { display: flex; gap: 8px; align-items: flex-start; text-align: left; border: 0; background: none; color: var(--text); padding: 5px 6px; border-radius: 8px; font: inherit; font-size: 13px; cursor: pointer; }
+.vr-snip:hover { background: var(--accent-soft); }
+.vr-snip.playing { background: var(--accent-soft); color: var(--accent); }
+.vr-snip svg { width: 14px; height: 14px; flex: none; margin-top: 2px; fill: currentColor; stroke: none; }
+.vr-snip .tm { color: var(--muted); font-variant-numeric: tabular-nums; flex: none; min-width: 58px; }
+.vr-snip .tx { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.vr-sect { margin: 6px 0 0; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+@media (max-width: 640px) { .vr-body { grid-template-columns: 1fr; } }

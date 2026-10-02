@@ -9,171 +9,16 @@
 <body>
 
 
-<!-- Empty / start state -->
-<div class="empty" id="empty">
-  <div class="drop" id="drop">
-    <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v5M8 22h8"/></svg>
-    <h1 id="empty-title">Recorder Playback</h1>
-    <p id="empty-text">Open your <code>processed_daily</code> folder to listen along with the transcript.</p>
-    <div class="actions file-only">
-      <button class="btn primary" id="open-folder">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
-        Open folder
-      </button>
-      <button class="btn" id="open-files">Choose files…</button>
-    </div>
-    <div class="hint file-only">Or drag the folder / a transcript <code>.json</code> + its <code>.wav</code> here.<br>Tip: run <code>python app.py --serve</code> to skip this step.</div>
-  </div>
-</div>
+{% include "partials/empty.html" %}
 
 <!-- Main app -->
 <div class="app hidden" id="app">
-  <header>
-    <button class="icon-btn" id="library-toggle" aria-label="Show library" title="Library">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
-    </button>
-    <div class="brand" id="brand" role="button" tabindex="0" title="Home" style="cursor:pointer">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v5M8 22h8"/></svg>
-      Recorder Playback
-    </div>
-    <div class="day-nav">
-      <button class="icon-btn" id="prev-day" title="Previous day (Shift+←)" aria-label="Previous day">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
-      </button>
-      <button class="icon-btn" id="next-day" title="Next day (Shift+→)" aria-label="Next day">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
-      </button>
-    </div>
-    <div class="titles">
-      <h1 id="title">Recording</h1>
-      <span class="sub" id="subtitle"></span>
-    </div>
-    <span class="spacer"></span>
-    <button class="job-pill hidden" id="job-pill" title="Open the day being transcribed">
-      <svg class="ring" viewBox="0 0 20 20"><circle class="bg" cx="10" cy="10" r="8"/><circle class="fg" id="job-ring" cx="10" cy="10" r="8" stroke-dasharray="50.27" stroke-dashoffset="50.27"/></svg>
-      <span class="txt" id="job-text"></span>
-    </button>
-    <button class="icon-btn" id="export-btn" title="Download transcript (.txt)" aria-label="Download transcript">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0-4-4m4 4 4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
-    </button>
-    <button class="icon-btn" id="help-btn" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M8 14h8"/></svg>
-    </button>
-    <button class="icon-btn file-only" id="close-btn" title="Open another folder" aria-label="Open another folder">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
-    </button>
-    <button class="icon-btn" id="details-toggle" title="Day details" aria-label="Show day details">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
-    </button>
-  </header>
+  {% include "partials/header.html" %}
 
   <main>
-    <!-- Library of days -->
-    <aside class="panel drawer" id="library" aria-label="Library">
-      <div class="lib-head">
-        <h2>Library</h2>
-        <span class="muted" style="font-size:12px" id="lib-count"></span>
-        <button class="icon-btn server-only" id="refresh-btn" title="Check for new recordings" aria-label="Refresh library" style="width:30px;height:30px">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:16px;height:16px"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>
-        </button>
-      </div>
-      <button class="lib-home server-only" id="lib-home">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11 12 4l9 7"/><path d="M5 10v10h14V10"/></svg>
-        Home &amp; sync <span class="dot hidden" id="lib-home-dot" title="Recorder connected"></span>
-      </button>
-      <button class="lib-home server-only" id="lib-people">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7M18 14a6.5 6.5 0 0 1 3.5 6"/></svg>
-        People
-      </button>
-      <button class="lib-home server-only" id="lib-overview">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
-        Overview
-      </button>
-      <button class="lib-home server-only" id="lib-meetings">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4M8 15h5"/></svg>
-        Meetings
-      </button>
-      <div class="lib-actions server-only hidden" id="lib-actions">
-        <button class="btn small" id="process-all"></button>
-      </div>
-      <div class="lib-list" id="lib-list"></div>
-    </aside>
-
-    <!-- Transcript / pending -->
-    <div class="content">
-      <div class="home" id="home"><div class="home-inner" id="home-inner"></div></div>
-      <div class="toolbar" id="toolbar">
-        <label class="search">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
-          <input type="search" id="search" placeholder="Search this day  ( / )" autocomplete="off">
-          <span class="count" id="search-count"></span>
-        </label>
-        <span class="noise-ctl server-only hidden" id="noise-ctl">
-          <button class="btn small" id="noise-toggle"></button>
-          <button class="btn small hidden" id="noise-trash">Trash all</button>
-        </span>
-        <label class="toggle"><input type="checkbox" id="follow" checked> Follow audio</label>
-      </div>
-      <div class="banner hidden" id="banner">
-        <span id="banner-text"></span>
-        <button class="btn small primary server-only" id="banner-btn">Re-transcribe</button>
-      </div>
-      <div class="transcript" id="transcript"><div class="transcript-inner" id="summary-wrap"></div><div class="transcript-inner" id="transcript-inner"></div></div>
-      <div class="pending-view hidden" id="pending"><div class="pending-inner" id="pending-inner"></div></div>
-      <button class="btn jump hidden" id="jump">↓ Back to current line</button>
-
-      <div class="player">
-        <div class="timeline" id="timeline" role="slider" tabindex="0" aria-label="Seek" aria-valuemin="0">
-          <div class="track"><div id="segs"></div><div class="played" id="played"></div></div>
-          <div id="ticks"></div>
-          <div class="knob" id="knob"></div>
-          <div class="tip hidden" id="tip"></div>
-        </div>
-        <div class="controls">
-          <span class="time" id="time">0:00 / 0:00</span>
-          <span class="now" id="now"></span>
-          <button class="icon-btn" id="back" title="Back 10s (←)" aria-label="Back 10 seconds">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><text x="12" y="15.5" font-size="7" text-anchor="middle" fill="currentColor" stroke="none" font-weight="700">10</text></svg>
-          </button>
-          <button class="play" id="play" aria-label="Play">
-            <svg id="play-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13a1 1 0 0 0 1.5.9l10.4-6.5a1 1 0 0 0 0-1.8L9.5 4.6A1 1 0 0 0 8 5.5z"/></svg>
-          </button>
-          <button class="icon-btn" id="fwd" title="Forward 10s (→)" aria-label="Forward 10 seconds">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/><text x="12" y="15.5" font-size="7" text-anchor="middle" fill="currentColor" stroke="none" font-weight="700">10</text></svg>
-          </button>
-          <button class="btn rate" id="rate" title="Playback speed ([ / ])">1×</button>
-          <input class="vol" id="vol" type="range" min="0" max="1" step="0.05" value="1" aria-label="Volume">
-        </div>
-      </div>
-    </div>
-
-    <!-- Day details -->
-    <aside class="panel drawer" id="details" aria-label="Day details">
-      <section>
-        <h2>Overview</h2>
-        <div class="stats" id="stats"></div>
-      </section>
-      <section id="rec-section">
-        <h2>Recordings</h2>
-        <div id="recordings"></div>
-      </section>
-      <section class="server-only hidden" id="parts-section">
-        <h2>Segments</h2>
-        <div id="parts"></div>
-        <div class="note">A new segment starts after 5 minutes without speech. Add one to a meeting to track it.</div>
-      </section>
-      <section id="spk-section">
-        <h2>Speakers</h2>
-        <div id="speakers"></div>
-        <div class="note">Use the list under each voice to say who it is <b>on this day</b> (two voices can be the same person). Click a name to hide/show; double-click to rename everywhere.</div>
-        <button class="btn small server-only" id="review-btn" style="width:100%;margin-top:8px">Review voices…</button>
-      </section>
-      <section class="server-only" id="redo-section">
-        <h2>Speaker detection</h2>
-        <button class="btn small" id="redo-btn" style="width:100%">Re-transcribe this day…</button>
-        <div class="note" id="redo-note">Wrong number of people? Tell it how many were talking and run it again.</div>
-      </section>
-    </aside>
+    {% include "partials/library.html" %}
+    {% include "partials/content.html" %}
+    {% include "partials/details.html" %}
   </main>
   <div class="scrim hidden" id="scrim"></div>
 </div>
@@ -182,130 +27,23 @@
 <input type="file" id="folder-input" webkitdirectory multiple hidden>
 <input type="file" id="files-input" accept=".json,audio/*,.wav,.mp3" multiple hidden>
 
-<dialog id="rename-dlg">
-  <form method="dialog">
-    <h3>Rename speaker</h3>
-    <input type="text" id="rename-input" required>
-    <div class="note file-only">Applies to this viewer only. To rename permanently run:<br><code id="rename-cmd"></code></div>
-    <div class="note server-only">Saved to the voice database, so this name is used for every past day and future recordings.</div>
-    <div class="row">
-      <button class="btn" value="cancel" formnovalidate>Cancel</button>
-      <button class="btn primary" value="ok">Save</button>
-    </div>
-  </form>
-</dialog>
+{% include "dialogs/rename.html" %}
 
-<dialog id="process-dlg" class="wide">
-  <form method="dialog">
-    <h3 id="process-title">Transcribe this day</h3>
-    <p class="muted" id="process-lead" style="margin:0 0 14px"></p>
-    <div class="count-section">
-      <h4 class="sect">How many people were talking?</h4>
-      <div class="choice">
-        <label><input type="radio" name="count-mode" value="auto" checked> Work it out automatically</label>
-        <label><input type="radio" name="count-mode" value="exact"> Exactly <input type="number" id="count-exact" min="1" max="30" value="2"> people</label>
-        <label><input type="radio" name="count-mode" value="min"> At least <input type="number" id="count-min" min="1" max="30" value="2"> people</label>
-      </div>
-    </div>
-    <h4 class="sect sect-row">Speech segments <span class="muted" id="clips-summary" style="font-weight:400"></span>
-      <button type="button" class="btn small" id="auto-all" title="Set every recording's levels from its measurements">Auto-adjust all</button></h4>
-    <div class="wave-key"><span><i class="k-orig"></i>original</span><span><i class="k-after"></i>with your settings</span><span><i class="k-clip"></i>clipping</span><span><i class="k-fix"></i>repaired</span><span><i class="k-gate"></i>silenced by gate</span><span>Click a waveform to listen</span></div>
-    <div class="clips" id="clips-list"></div>
-    <div class="note" id="process-note"></div>
-    <div class="row" id="process-actions"></div>
-  </form>
-</dialog>
+{% include "dialogs/process.html" %}
 
-<dialog id="voices-dlg" class="wide">
-  <form method="dialog">
-    <h3 id="voices-title">Who was talking?</h3>
-    <p class="muted" style="margin:0 0 12px">Play a few lines from each voice and choose who it is. Confirmed assignments stay here as drafts until you save.</p>
-    <div class="vr-list" id="voices-list"></div>
-    <div class="voices-footer">
-      <button class="btn" value="later" title="Close for now; it stays marked on Home">Later</button>
-      <button class="btn primary" type="button" id="voices-done">Save and finish</button>
-    </div>
-  </form>
-</dialog>
+{% include "dialogs/voices.html" %}
 
-<dialog id="teach-dlg" class="wide">
-  <form method="dialog">
-    <h3 id="teach-title">Teach voices</h3>
-    <p class="muted" style="margin:0 0 12px" id="teach-intro"></p>
-    <div class="vr-list" id="teach-list"></div>
-    <div class="row">
-      <button class="btn" value="later" id="teach-later" title="Close; the moved lines stay in the tray">Not now</button>
-      <button class="btn primary" type="button" id="teach-go">Teach</button>
-    </div>
-  </form>
-</dialog>
-<div class="teach-tray hidden server-only" id="teach-tray"></div>
+{% include "dialogs/teach.html" %}
 
-<dialog id="split-dlg" class="wide">
-  <form method="dialog">
-    <h3 id="split-title">Split this voice</h3>
-    <p class="muted" style="margin:0 0 12px">Name the people mixed into this voice, then sort lines with the keys
-      <kbd>1</kbd>–<kbd>4</kbd>. Each line plays by itself. <kbd>S</kbd> skips (it stays as it is), <kbd>Z</kbd> goes back,
-      <kbd>Space</kbd> replays, and <kbd>Enter</kbd> accepts the suggestion. After a few lines per person, “Suggest the rest” sorts lines by voice.</p>
-    <div class="split-people" id="split-people"></div>
-    <div class="split-card" id="split-card"></div>
-    <div class="split-tools" id="split-tools"></div>
-    <div class="row">
-      <button class="btn" value="cancel" id="split-cancel">Cancel</button>
-      <button class="btn primary" type="button" id="split-save">Save</button>
-    </div>
-  </form>
-</dialog>
+{% include "dialogs/split.html" %}
 
-<dialog id="meeting-dlg">
-  <form method="dialog">
-    <h3 id="meeting-title">Add to a meeting</h3>
-    <div class="mt-pick" id="meeting-list"></div>
-    <div class="mt-new">
-      <input type="text" id="meeting-new" placeholder="New meeting name" maxlength="120">
-      <button class="btn primary" type="button" id="meeting-create">Create and add</button>
-    </div>
-    <div class="row"><button class="btn" value="close">Close</button></div>
-  </form>
-</dialog>
+{% include "dialogs/meeting.html" %}
 
-<dialog id="merge-dlg">
-  <form method="dialog">
-    <h3>Same person?</h3>
-    <p class="muted" style="margin:0" id="merge-text"></p>
-    <div class="row">
-      <button class="btn" value="cancel">Cancel</button>
-      <button class="btn primary" value="ok">Merge</button>
-    </div>
-  </form>
-</dialog>
+{% include "dialogs/merge.html" %}
 
-<dialog id="audio-dlg">
-  <h3>Audio file needed</h3>
-  <p style="margin:0;color:var(--muted)">Pick <code id="audio-name"></code> to listen along. You can still read the transcript without it.</p>
-  <div class="row">
-    <button class="btn" id="audio-skip">Read only</button>
-    <button class="btn primary" id="audio-pick">Choose audio…</button>
-  </div>
-  <input type="file" id="audio-input" accept="audio/*,.wav,.mp3" hidden>
-</dialog>
+{% include "dialogs/audio.html" %}
 
-<dialog id="help-dlg">
-  <h3>Keyboard shortcuts</h3>
-  <div class="keys">
-    <span><kbd>Space</kbd> / <kbd>K</kbd></span><span>Play / pause</span>
-    <span><kbd>←</kbd> <kbd>→</kbd></span><span>Back / forward 10s</span>
-    <span><kbd>J</kbd> <kbd>L</kbd></span><span>Previous / next line</span>
-    <span><kbd>Shift</kbd>+<kbd>←</kbd> <kbd>→</kbd></span><span>Previous / next day</span>
-    <span><kbd>[</kbd> <kbd>]</kbd></span><span>Slower / faster</span>
-    <span><kbd>/</kbd></span><span>Search this day</span>
-    <span><kbd>Enter</kbd> / <kbd>Shift+Enter</kbd></span><span>Next / previous match</span>
-    <span><kbd>Esc</kbd></span><span>Clear search / close panels</span>
-    <span><kbd>F</kbd></span><span>Toggle follow audio</span>
-    <span><kbd>Del</kbd></span><span>Trash the focused line</span>
-  </div>
-  <form method="dialog" class="row"><button class="btn primary">Got it</button></form>
-</dialog>
+{% include "dialogs/help.html" %}
 
 <div class="toast" id="toast"></div>
 

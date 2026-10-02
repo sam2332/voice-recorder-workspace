@@ -1,0 +1,13 @@
+.split-people { display: grid; gap: 6px; margin-bottom: 12px; }
+.split-slot { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.split-slot input { flex: 1; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); }
+.split-slot .n { min-width: 64px; color: var(--muted); text-align: right; }
+.split-card { border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; background: var(--bg); display: grid; gap: 10px; min-height: 150px; }
+.split-card .meta { font-size: 12px; color: var(--muted); }
+.split-card .say { font-size: 17px; line-height: 1.5; }
+.split-card .keys { display: flex; gap: 6px; flex-wrap: wrap; }
+.split-card .keys .btn.sugg { border-color: var(--accent); background: var(--accent-soft); }
+.split-tools { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 10px 0; font-size: 13px; }
+.split-bar { height: 6px; border-radius: 3px; background: var(--surface-2); overflow: hidden; flex: 1 1 120px; }
+.split-bar > i { display: block; height: 100%; background: var(--accent); }
+.split-btn { margin-top: 6px; }

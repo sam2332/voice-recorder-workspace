@@ -1,0 +1,34 @@
+/* ---------- Details ---------- */
+.stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.stat { background: var(--surface-2); border-radius: 10px; padding: 10px 12px; min-width: 0; }
+.stat b { display: block; font-size: 17px; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stat span { font-size: 12px; color: var(--muted); }
+.rec {
+  display: grid; grid-template-columns: 28px 1fr auto; align-items: center; gap: 10px; width: 100%;
+  text-align: left; border: 1px solid transparent; background: transparent; border-radius: 10px; padding: 7px 8px;
+}
+.rec:hover { background: var(--surface-2); }
+.rec.active { background: var(--accent-soft); }
+.rec .num {
+  width: 28px; height: 28px; border-radius: 8px; display: grid; place-items: center; font-size: 12px; font-weight: 600;
+  background: var(--surface-2); color: var(--muted);
+}
+.rec.active .num { background: var(--accent); color: #fff; }
+.rec .num svg { width: 14px; height: 14px; }
+.rec .when { font-weight: 600; font-size: 14px; }
+.rec .file { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rec .len { font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+.speaker {
+  display: grid; grid-template-columns: 12px 1fr auto; align-items: center; gap: 10px;
+  width: 100%; padding: 8px 10px; border-radius: 10px; border: 1px solid transparent;
+  background: transparent; text-align: left;
+}
+.speaker:hover { background: var(--surface-2); }
+.speaker.off { opacity: .4; }
+.speaker .dot { width: 12px; height: 12px; border-radius: 50%; }
+.speaker .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.speaker .pct { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+.speaker .bar { grid-column: 2 / 4; height: 4px; border-radius: 2px; background: var(--surface-2); overflow: hidden; }
+.speaker .bar > i { display: block; height: 100%; }
+.note { font-size: 12px; color: var(--muted); margin-top: 8px; }

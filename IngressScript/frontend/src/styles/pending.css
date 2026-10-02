@@ -1,0 +1,18 @@
+/* ---------- Not-yet-transcribed view ---------- */
+.pending-view { flex: 1; overflow-y: auto; padding: 32px 24px; }
+.pending-inner { max-width: 560px; margin: 0 auto; }
+.pending-card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 28px; text-align: center; box-shadow: var(--shadow); }
+.pending-card .icon { width: 44px; height: 44px; color: var(--warn); }
+.pending-card.processing .icon, .pending-card.queued .icon { color: var(--accent); }
+.pending-card.failed .icon { color: var(--danger); }
+.pending-card h2 { margin: 10px 0 4px; font-size: 19px; }
+.pending-card p { margin: 0; color: var(--muted); }
+.pending-card .actions { margin-top: 18px; display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+.progress { margin-top: 18px; text-align: left; }
+.progress .bar { height: 8px; border-radius: 4px; background: var(--surface-2); overflow: hidden; }
+.progress .bar > i { display: block; height: 100%; background: var(--accent); transition: width .5s; }
+.progress .bar.indeterminate > i { width: 30% !important; animation: slide 1.4s ease-in-out infinite; }
+@keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
+.progress .lbl { display: flex; justify-content: space-between; font-size: 13px; color: var(--muted); margin-top: 6px; }
+.error-box { margin-top: 16px; text-align: left; background: var(--danger-soft); color: var(--danger); border-radius: 10px; padding: 10px 12px; font-size: 13.5px; overflow-wrap: anywhere; }
+.pending-view h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 28px 0 8px; }

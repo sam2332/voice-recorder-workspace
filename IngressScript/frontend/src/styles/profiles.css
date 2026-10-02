@@ -1,0 +1,22 @@
+.vprof { margin: 12px 0 4px; border: 1px solid var(--border); border-radius: 12px; padding: 8px 12px; background: var(--bg); }
+.vprof > summary { cursor: pointer; font-weight: 600; font-size: 14px; }
+.vprint { border-top: 1px solid var(--border); padding: 8px 0; display: grid; gap: 2px; }
+.vprint:first-of-type { margin-top: 8px; }
+.vprint .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; }
+.vprof-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; border-top: 1px solid var(--border); padding-top: 10px; margin-top: 4px; }
+.vprof-actions input, .vprof-actions select { padding: 5px 9px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface); font-size: 13px; }
+.btn.danger { color: var(--danger); }
+.chip.tv, .tv-badge { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); }
+.tv-badge { font-size: 11px; font-weight: 600; padding: 1px 6px; border-radius: 999px; margin-left: 6px; vertical-align: middle; }
+.person-notes { margin: 14px 0 0; padding-top: 12px; border-top: 1px solid var(--border); display: grid; gap: 6px; }
+.person-notes h4 { margin: 0; font-size: 13px; color: var(--muted); font-weight: 600; }
+.pnote { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; font-size: 14px; }
+.pnote .ov-kind { flex: none; }
+.pnote .prec { padding: 0 8px; flex: none; }
+.heat-foot { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 8px; font-size: 12px; color: var(--muted); }
+.legend { display: inline-flex; align-items: center; gap: 3px; }
+.legend .sq.l0 { background: var(--surface-2); } .legend .sq.l1 { background: color-mix(in srgb, var(--accent) 30%, var(--surface-2)); }
+.legend .sq.l2 { background: color-mix(in srgb, var(--accent) 52%, var(--surface-2)); } .legend .sq.l3 { background: color-mix(in srgb, var(--accent) 75%, var(--surface-2)); }
+.legend .sq.l4 { background: var(--accent); }
+.legend .sq { display: inline-block; width: 11px; height: 11px; border-radius: 3px; }
+.legend .newkey { display: inline-block; width: 11px; height: 11px; border-radius: 3px; box-shadow: inset 0 0 0 1.5px var(--warn); margin: 0 4px 0 12px; }

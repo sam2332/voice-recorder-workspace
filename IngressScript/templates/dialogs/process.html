@@ -1,0 +1,20 @@
+<dialog id="process-dlg" class="wide">
+  <form method="dialog">
+    <h3 id="process-title">Transcribe this day</h3>
+    <p class="muted" id="process-lead" style="margin:0 0 14px"></p>
+    <div class="count-section">
+      <h4 class="sect">How many people were talking?</h4>
+      <div class="choice">
+        <label><input type="radio" name="count-mode" value="auto" checked> Work it out automatically</label>
+        <label><input type="radio" name="count-mode" value="exact"> Exactly <input type="number" id="count-exact" min="1" max="30" value="2"> people</label>
+        <label><input type="radio" name="count-mode" value="min"> At least <input type="number" id="count-min" min="1" max="30" value="2"> people</label>
+      </div>
+    </div>
+    <h4 class="sect sect-row">Speech segments <span class="muted" id="clips-summary" style="font-weight:400"></span>
+      <button type="button" class="btn small" id="auto-all" title="Set every recording's levels from its measurements">Auto-adjust all</button></h4>
+    <div class="wave-key"><span><i class="k-orig"></i>original</span><span><i class="k-after"></i>with your settings</span><span><i class="k-clip"></i>clipping</span><span><i class="k-fix"></i>repaired</span><span><i class="k-gate"></i>silenced by gate</span><span>Click a waveform to listen</span></div>
+    <div class="clips" id="clips-list"></div>
+    <div class="note" id="process-note"></div>
+    <div class="row" id="process-actions"></div>
+  </form>
+</dialog>

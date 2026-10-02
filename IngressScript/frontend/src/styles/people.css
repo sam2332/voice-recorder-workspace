@@ -1,0 +1,19 @@
+.speaker-row { margin-bottom: 6px; }
+.who-row { padding: 0 10px 0 32px; }
+.who-note { font-size: 11.5px; color: var(--muted); margin-top: 3px; }
+.who-row .maybe { margin-top: 5px; width: 100%; justify-content: center; border-style: dashed; color: var(--accent); }
+.who-row select, .who-row input { width: 100%; padding: 4px 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); font-size: 12.5px; color: var(--text); }
+details.person summary { display: flex; align-items: center; gap: 12px; cursor: pointer; list-style: none; }
+details.person summary::-webkit-details-marker { display: none; }
+.person .avatar { flex: none; }
+.person-info { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.person-name { font-weight: 600; font-size: 16px; }
+.person-meta { font-size: 13px; color: var(--muted); }
+.person-days { display: grid; gap: 8px; margin-top: 14px; }
+.pday { display: grid; grid-template-columns: 110px 1fr; gap: 10px; align-items: start; }
+.pday-date { text-align: left; border: 0; background: transparent; font-weight: 600; padding: 4px 0; color: var(--accent); }
+.pday-date:hover { text-decoration: underline; }
+.precs { display: flex; flex-wrap: wrap; gap: 6px; }
+.prec { border: 1px solid var(--border); background: var(--surface-2); border-radius: 8px; padding: 4px 10px; font-size: 13px; }
+.prec:hover { border-color: var(--accent); }
+.prec span { color: var(--muted); }

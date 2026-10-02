@@ -1,0 +1,34 @@
+.ov-filters { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 14px 0 6px; }
+.ov-filters input[type=search], .ov-filters select { padding: 7px 10px; border: 1px solid var(--border); background: var(--surface); border-radius: 10px; }
+.ov-filters input[type=search] { flex: 1 1 220px; min-width: 0; }
+.ov-check { font-size: 13px; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
+.ov-count { font-size: 12px; color: var(--muted); margin: 4px 2px 8px; min-height: 1em; }
+.home-inner.ov-wide { max-width: 1240px; }
+.ov-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0 2px; }
+.ov-tab { border: 1px solid var(--border); background: var(--surface); border-radius: 999px; padding: 5px 12px; font-size: 13px; color: var(--muted); }
+.ov-tab:hover { border-color: var(--accent); color: inherit; }
+.ov-tab.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.ov-tab .n { opacity: .7; margin-left: 5px; font-weight: 400; }
+.ov-tablewrap { margin-bottom: 16px; }
+.ov-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 12px; }
+.ov-card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.ov-card-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; }
+.ov-card-top .prec { margin-left: auto; }
+.ov-card .ov-text { font-size: 14px; line-height: 1.45; }
+.ov-card.ov-done .ov-text { text-decoration: line-through; color: var(--muted); }
+.ov-card .pday-date { white-space: nowrap; }
+.ov-card-people:empty { display: none; }
+.ov-empty { padding: 12px 16px; margin: 0; }
+.ov-table { border-collapse: collapse; width: 100%; font-size: 14px; }
+.ov-table th { text-align: left; font-size: 12px; font-weight: 600; color: var(--muted); padding: 10px 12px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.ov-table td { padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.ov-table tr:last-child td { border-bottom: 0; }
+.ov-table .ov-text { min-width: 240px; }
+.ov-table .ov-tick { width: 28px; padding-right: 0; }
+.ov-table tr.ov-done .ov-text { text-decoration: line-through; color: var(--muted); }
+.ov-table .pday-date { white-space: nowrap; }
+.ov-kind { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: var(--surface-2); white-space: nowrap; }
+.ov-kind.k-task, .ov-kind.k-plan { background: var(--accent-soft); color: var(--accent); }
+.ov-kind.k-shopping { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); }
+.ov-person { border: 1px solid var(--border); background: var(--surface-2); border-radius: 999px; padding: 1px 8px; font-size: 12px; margin: 0 4px 4px 0; }
+.ov-person:hover { border-color: var(--accent); }

@@ -1,0 +1,6 @@
+.panel { background: var(--surface); overflow-y: auto; min-height: 0; }
+#library { border-right: 1px solid var(--border); display: flex; flex-direction: column; }
+#details { border-left: 1px solid var(--border); padding: 20px; }
+.panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
+.panel section + section { margin-top: 26px; }
+.scrim { position: fixed; inset: var(--header-h) 0 0 0; background: rgba(0,0,0,.35); z-index: 25; }

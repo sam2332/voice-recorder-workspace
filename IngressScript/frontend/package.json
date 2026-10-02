@@ -1,0 +1,18 @@
+{
+  "name": "recorder-viewer",
+  "version": "1.0.0",
+  "description": "Viewer front end: TypeScript modules bundled into ../static/viewer.js",
+  "scripts": {
+    "build": "npm run check && npm run build:js && npm run build:css",
+    "build:js": "esbuild src/main.ts --bundle --format=iife --target=es2022 --outfile=../static/viewer.js",
+    "build:css": "esbuild src/styles/index.css --bundle --outfile=../static/viewer.css",
+    "watch": "npm run build:css && esbuild src/main.ts --bundle --format=iife --target=es2022 --outfile=../static/viewer.js --sourcemap --watch",
+    "check": "tsc --noEmit"
+  },
+  "type": "commonjs",
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2"
+  },
+  "private": true
+}

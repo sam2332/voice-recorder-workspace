@@ -20,3 +20,9 @@ processed_daily/
 .env
 # Personal settings chosen in the viewer
 IngressScript/settings.json
+
+node_modules/
+
+# Front-end build tooling
+node_modules/
+IngressScript/static/*.map
