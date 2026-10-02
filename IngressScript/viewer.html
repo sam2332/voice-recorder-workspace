@@ -841,7 +841,7 @@
         <label><input type="radio" name="count-mode" value="min"> At least <input type="number" id="count-min" min="1" max="30" value="2"> people</label>
       </div>
     </div>
-    <h4 class="sect sect-row">Recordings <span class="muted" id="clips-summary" style="font-weight:400"></span>
+    <h4 class="sect sect-row">Speech segments <span class="muted" id="clips-summary" style="font-weight:400"></span>
       <button type="button" class="btn small" id="auto-all" title="Set every recording's levels from its measurements">Auto-adjust all</button></h4>
     <div class="wave-key"><span><i class="k-orig"></i>original</span><span><i class="k-after"></i>with your settings</span><span><i class="k-clip"></i>clipping</span><span><i class="k-fix"></i>repaired</span><span><i class="k-gate"></i>silenced by gate</span><span>Click a waveform to listen</span></div>
     <div class="clips" id="clips-list"></div>
@@ -1328,11 +1328,6 @@
     t_asum.append(el('div', null, 'Summarize recordings automatically'), el('div', 'hint', 'Off: summaries wait for you. On: they start as soon as the transcript is ready.'));
     l_asum.append(t_asum, asum);
 
-    const lvl = el('input', 'switch'); lvl.type = 'checkbox'; lvl.checked = s.relevel_segments !== false;
-    const l_lvl = el('label', 'row-l'); const t_lvl = el('div');
-    t_lvl.append(el('div', null, 'Even out the loudness of each segment'), el('div', 'hint', 'After transcribing, a quiet meeting and a loud one in the same day are brought to the same level. You can adjust each segment afterwards.'));
-    l_lvl.append(t_lvl, lvl);
-
     const lang = el('select'); LANGS.forEach(([v, n]) => { const o = el('option', null, n); o.value = v; lang.append(o); }); lang.value = s.language || '';
     const l2 = el('label', 'row-l'); const t2 = el('div');
     t2.append(el('div', null, 'Language'), el('div', 'hint', 'Choosing it avoids mistakes when a day starts with noise.'));
@@ -1342,9 +1337,9 @@
     const l3 = el('label', 'row-l'); const t3 = el('div');
     t3.append(el('div', null, 'Clothing-rustle cleanup'), el('div', 'hint', 'Turns down the scratchy sound of the mic rubbing on clothes. Voices are left alone.'));
     l3.append(t3, rustle);
-    form.append(l1, la, l_asum, l_lvl, l2, l3);
+    form.append(l1, la, l_asum, l2, l3);
     const actions = el('div', 'actions');
-    actions.append(btn(saveLabel, 'primary', () => onSave({ auto_transcribe: auto.checked, auto_sync: async.checked, auto_summarize: asum.checked, relevel_segments: lvl.checked, language: lang.value, rustle_strength: +rustle.value })));
+    actions.append(btn(saveLabel, 'primary', () => onSave({ auto_transcribe: auto.checked, auto_sync: async.checked, auto_summarize: asum.checked, language: lang.value, rustle_strength: +rustle.value })));
     form.append(actions);
     return form;
   }
@@ -1998,7 +1993,7 @@
     $('export-btn').disabled = !ready;
     $('spk-section').classList.toggle('hidden', !ready);
     $('redo-section').classList.toggle('hidden', !ready);
-    $('rec-section').classList.toggle('hidden', !ready || !state.sources.length);
+    $('rec-section').classList.toggle('hidden', !ready || !state.sources.length || state.sources.some(s => s.file));
 
     if (ready) {
       if (!keep) $('search').value = '';
@@ -2041,14 +2036,15 @@
     const lib = libItem(state.date) || {};
     const words = state.segments.reduce((n, s) => n + (s.noise ? 0 : (s.text.match(/\S+/g) || []).length), 0);
     const recs = state.sources.length || lib.recordings || 0;
+    const unit = isReady() && state.sources.some(s => s.file) ? 'segment' : 'recording';
     const dur = state.duration || lib.duration || state.sources.reduce((n, s) => n + (s.duration || 0), 0);
     const items = isReady()
-      ? [[fmtDur(dur), 'Length'], [words.toLocaleString(), 'Words'], [recs, plural(recs, 'Recording').replace(/^\d+ /, '')], [speakerCount(), 'Speakers']]
+      ? [[fmtDur(dur), 'Length'], [words.toLocaleString(), 'Words'], [recs, plural(recs, unit[0].toUpperCase() + unit.slice(1)).replace(/^\d+ /, '')], [speakerCount(), 'Speakers']]
       : [[fmtDur(dur), 'Audio'], [recs, plural(recs, 'Recording').replace(/^\d+ /, '')]];
     $('stats').replaceChildren(...items.map(([v, l]) => { const s = el('div', 'stat'); s.append(el('b', null, String(v)), el('span', null, l)); return s; }));
 
     const bits = [fmtDur(dur)];
-    if (recs) bits.push(plural(recs, 'recording'));
+    if (recs) bits.push(plural(recs, unit));
     if (isReady()) bits.push(plural(speakerCount(), 'speaker'));
     else bits.push('not transcribed yet');
     $('subtitle').textContent = bits.join(' · ');
@@ -2722,7 +2718,7 @@
     const q = $('search').value.trim();
     const rx = q ? new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi') : null;
     const frag = document.createDocumentFragment();
-    const timed = sourcesTimed() && state.sources.length > 1;
+    const timed = sourcesTimed() && state.sources.length > 1 && !state.sources.some(s => s.file);   // segments get their own dividers
     state.matches = [];
     let turn = null, lastSpk = null, lastEnd = -1, lastSrc = -1, shown = 0, lastPart = -1;
 
@@ -2853,9 +2849,7 @@
       const row = el('div', 'part');
       const head = el('div', 'part-head');
       head.append(el('span', null, `Segment ${i + 1}`), el('span', 'part-meta', `${clockAt(p.start) || fmt(p.start)}\u2013${clockAt(p.end) || fmt(p.end)}`));
-      const lv = p.level;
-      row.append(head, el('div', 'part-meta', [plural(p.lines, 'line'), p.speakers.slice(0, 3).map(displayName).join(', '),
-        lv && lv.gain_db ? `levelled ${lv.gain_db > 0 ? '+' : ''}${lv.gain_db} dB` : ''].filter(Boolean).join(' \u00b7 ')));
+      row.append(head, el('div', 'part-meta', [plural(p.lines, 'line'), p.speakers.slice(0, 3).map(displayName).join(', ')].filter(Boolean).join(' \u00b7 ')));
 
       const act = el('div', 'part-actions');
       const jump = el('button', 'btn small', 'Play'); jump.type = 'button'; jump.onclick = () => { seek(p.start, true); closeDrawers(); };
@@ -4033,7 +4027,7 @@
       return { w, inp, upd };
     };
     const gain = slider('Volume', -12, 30, 1, clip.edit.gain_db, v => (v > 0 ? '+' : '') + v + ' dB', v => clip.edit.gain_db = v,
-      'Boost or lower this recording before transcription. Red on the waveform means it would clip.');
+      'Boost or lower this segment before transcription. Red on the waveform means it would clip.');
     const sens = slider('Speech sensitivity', 1, 5, 1, clip.edit.sensitivity, v => SENS_LABELS[v], v => clip.edit.sensitivity = v,
       'Higher picks up quieter or more distant voices, but also more noise.');
     const gate = slider('Noise gate', GATE_OFF, -20, 1, clip.edit.gate_db ?? GATE_OFF, v => v <= GATE_OFF ? 'Off' : v + ' dB',
@@ -4075,21 +4069,21 @@
 
   async function loadClips(date, only) {
     const list = $('clips-list');
-    list.replaceChildren(el('div', 'note', 'Reading the recordings…'));
+    list.replaceChildren(el('div', 'note', 'Finding the speech in the recordings\u2026'));
     let r;
     try { r = await api(`/api/days/${date}/clips`); }
     catch (e) { list.replaceChildren(el('div', 'error-box', `Couldn't read the recordings: ${e.message}`)); return []; }
     const clips = only ? r.clips.filter(c => only.includes(c.name)) : r.clips;
     const flagged = clips.filter(c => c.issues?.length).length;
-    $('clips-summary').textContent = `${plural(clips.length, 'recording')}` + (flagged ? ` · ${flagged} need${flagged === 1 ? 's' : ''} attention` : '');
+    $('clips-summary').textContent = `${plural(clips.length, 'segment')}` + (flagged ? ` \u00b7 ${flagged} need${flagged === 1 ? 's' : ''} attention` : '');
     list.replaceChildren(...clips.map(c => clipRow(c, r.default_rustle)));
     requestAnimationFrame(() => clips.forEach(drawWave));
     $('auto-all').onclick = () => {
       const auto = clips.filter(c => c.auto);
       auto.forEach(c => c.autoAdjust(true));
       const hard = auto.filter(c => c.auto.problems.length);
-      toast(hard.length ? `Adjusted ${plural(auto.length, 'recording')}; ${hard.length} still need${hard.length === 1 ? 's' : ''} a listen`
-        : `Adjusted ${plural(auto.length, 'recording')}. Click a waveform to listen.`);
+      toast(hard.length ? `Adjusted ${plural(auto.length, 'segment')}; ${hard.length} still need${hard.length === 1 ? 's' : ''} a listen`
+        : `Adjusted ${plural(auto.length, 'segment')}. Click a waveform to listen.`);
     };
     return clips;
   }
@@ -4104,7 +4098,7 @@
     const hint = (isCurrent ? state.data?.speaker_hint : null) || {};
     const n = isCurrent ? Object.keys(state.colors).filter(s => s !== 'Unknown').length : 2;
     $('process-title').textContent = `${title}: ${shortDate(date)}`;
-    $('process-lead').textContent = 'Check each recording’s levels, then start. Click a waveform to hear it with your settings.';
+    $('process-lead').textContent = 'Stretches of speech are found first, so long silences and steady noise are left out. Check each segment\u2019s levels, then start. Click a waveform to hear it with your settings.';
     const mode = hint.num_speakers ? 'exact' : hint.min_speakers ? 'min' : 'auto';
     document.querySelector(`input[name=count-mode][value=${mode}]`).checked = true;
     $('count-exact').value = hint.num_speakers || Math.max(n, 2);
@@ -4140,7 +4134,7 @@
     const dlg = $('process-dlg');
     state.blockedFor = b.date + '|' + b.clips.join(',');
     dlg.classList.add('blocked');
-    $('process-title').textContent = `Check ${b.clips.length > 1 ? 'these recordings' : 'this recording'} before transcribing continues`;
+    $('process-title').textContent = `Check ${b.clips.length > 1 ? 'these segments' : 'this segment'} before transcribing continues`;
     $('process-lead').textContent = `${shortDate(b.date)}: something looks unusual, so transcription is paused for everything until you choose. Click the waveform to listen.`;
     $('process-note').textContent = '';
     const send = async (levels, action) => {

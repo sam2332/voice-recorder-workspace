@@ -79,8 +79,11 @@ HALLUCINATIONS = ("teksting av", "tekstet av", "untertitel", "subtitles by", "so
                   "transcribed by", "transcription by", "copyright", "www.", ".com")
 # A day splits into segments wherever real speech stops for this long (a fan keeps the recorder running)
 SEGMENT_GAP_SECONDS = 300
-SEGMENT_TARGET_DB = -18.0          # each segment's loud speech is brought to about this level (dBFS)
-SEGMENT_MAX_BOOST_DB, SEGMENT_MAX_CUT_DB = 18.0, 12.0
+SEGMENT_PAD_SECONDS = 4.0          # silence kept either side of a segment so no word is cut off
+SEGMENT_MIN_SPEECH_SECONDS = 4.0   # a stretch with less speech than this is noise, not a segment
+SEGMENT_SPEECH_DB = 12.0           # a frame is speech when its voice band is this far above the local noise floor
+SEGMENT_MIN_FRAMES = 5             # a second is speech with this many speechy tenths of a second
+SEGMENT_DENSITY = 5                # ...and this many speech seconds among the 11 around it
 GATED_MODELS = ["pyannote/speaker-diarization-community-1"]
 
 # V2026-08-20-06-18-54.MP3 / .WAV -> date 2026-08-20, recorded at 06:18:54
@@ -105,7 +108,6 @@ DEFAULT_SETTINGS = {
     "auto_transcribe": False,     # transcribe new / incomplete days in the background
     "auto_sync": False,           # start syncing on startup if the recorder is connected
     "auto_summarize": False,      # summarize new days and update overview automatically
-    "relevel_segments": True,     # even out the loudness of each segment of a day after transcribing
     "language": LANGUAGE or "en",   # "" = detect
     "rustle_strength": RUSTLE_STRENGTH,
 }
@@ -122,7 +124,7 @@ def load_settings() -> dict:
 
 
 def save_settings(patch: dict) -> dict:
-    allowed = {"setup_done": bool, "auto_transcribe": bool, "auto_sync": bool, "auto_summarize": bool, "relevel_segments": bool, "language": str, "rustle_strength": float}
+    allowed = {"setup_done": bool, "auto_transcribe": bool, "auto_sync": bool, "auto_summarize": bool, "language": str, "rustle_strength": float}
     with _settings_lock:
         data = load_settings()
         for key, kind in allowed.items():
@@ -406,54 +408,89 @@ def rustle_mask_path(date_str: str) -> Path:
     return day_dir(date_str) / "rustle.npy"
 
 
-def prepare_daily_audio(date_str: str, file_list: list[Path]) -> Path:
-    day_dir(date_str).mkdir(parents=True, exist_ok=True)
-    merged_path = day_dir(date_str) / "merged.wav"
-    # Sidecar records which recordings the WAV was built from, so new recordings trigger a rebuild
-    manifest = day_dir(date_str) / "merged.sources.json"
-    mask_path = rustle_mask_path(date_str)
-    # Rebuilt when the recordings, their levels, or the rustle setting change
+def prepare_daily_audio(date_str: str, file_list: list[Path]) -> tuple[Path, list[dict]]:
+    """Cut the day's speech segments out of the recordings, each through its own levels (gain / gate / clipping
+    repair), clean up clothing rustle, and join them into <date>/merged.wav. Every segment is also kept as its
+    own file in <date>/segments/. Returns the merged file and the segments as sources (where each one sits in it)."""
+    from scipy.io import wavfile
+    import wave
+    day = day_dir(date_str)
+    seg_dir = segment_dir(date_str)
+    seg_dir.mkdir(parents=True, exist_ok=True)
+    merged_path, manifest, mask_path = day / "merged.wav", day / "merged.sources.json", rustle_mask_path(date_str)
+    segs = day_segments(date_str, file_list)
+    if not segs:
+        raise RuntimeError("No speech was found in this day's recordings.")
     strength = setting("rustle_strength")
-    levels = {f.name: {k: v for k, v in clip_levels(f.name).items() if k not in ("reviewed", "auto")} for f in file_list}
-    names = {"files": [[f.name, f.stat().st_size] for f in file_list], "rustle": strength, "levels": levels}
+    by_name = {f.name: f for f in file_list}
+    levels = {g["key"]: {k: v for k, v in clip_levels(g["key"]).items() if k not in ("reviewed", "auto")} for g in segs}
+    sigs = {g["key"]: {"size": by_name[g["file"]].stat().st_size, "start": g["start"], "duration": g["duration"],
+                       "rustle": strength, "levels": levels[g["key"]]} for g in segs}
+    # Rebuilt only when the recordings, a segment's levels, or the rustle setting change
     if merged_path.exists() and manifest.exists() and mask_path.exists():
         try:
-            if json.loads(manifest.read_text(encoding="utf-8")) == names:
-                return merged_path
-        except (OSError, json.JSONDecodeError):
+            saved = json.loads(manifest.read_text(encoding="utf-8"))
+            if saved.get("sig") == sigs:
+                return merged_path, saved["sources"]
+        except (OSError, json.JSONDecodeError, KeyError):
             pass
 
-    # Decode every recording through its own chain (gain / gate / clipping repair) and join them with
-    # the concat *filter* (not the demuxer), so a day can mix MP3s with the recorder's 48 kHz WAVs.
-    # Then: highpass + gentle level normalisation.
-    n = len(file_list)
-    graph = "".join(f"[{i}:a]{clip_chain(levels[f.name])}[a{i}];" for i, f in enumerate(file_list))
-    graph += "".join(f"[a{i}]" for i in range(n)) + f"concat=n={n}:v=0:a=1,highpass=f=80,speechnorm=e=4:r=0.0001:l=1[out]"
-    inputs = [arg for f in file_list for arg in ("-i", str(f))]
+    masks = []
+    for g in segs:
+        key, wav, npy, sig_file = g["key"], seg_dir / f"{g['key']}.wav", seg_dir / f"{g['key']}.npy", seg_dir / f"{g['key']}.json"
+        try:
+            fresh = wav.exists() and npy.exists() and json.loads(sig_file.read_text(encoding="utf-8")) == sigs[key]
+        except (OSError, json.JSONDecodeError):
+            fresh = False
+        if not fresh:
+            lv = levels[key]
+            tmp = wav.with_suffix(".tmp.wav")
+            cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-ss", f"{g['start']}", "-t", f"{g['duration']}",
+                   "-i", str(by_name[g["file"]]), "-af", clip_chain(lv) + ",highpass=f=80,speechnorm=e=4:r=0.0001:l=1",
+                   "-ar", str(SAMPLE_RATE), "-ac", "1", "-c:a", "pcm_s16le", str(tmp)]
+            try:
+                proc = subprocess.run(cmd, capture_output=True, text=True)
+                if proc.returncode != 0:
+                    raise RuntimeError(f"ffmpeg failed cutting {key}:\n{proc.stderr.strip()[-200:]}")
+                with wave.open(str(tmp)) as w:
+                    n = w.getnframes()
+                mask = derustle_wav(tmp, [(0, n, strength if lv["rustle"] is None else lv["rustle"])])
+                np.save(npy, mask)
+                tmp.replace(wav)
+                sig_file.write_text(json.dumps(sigs[key]), encoding="utf-8")
+            finally:
+                tmp.unlink(missing_ok=True)
+    for stale in seg_dir.iterdir():
+        if stale.stem not in sigs and stale.stem.removesuffix(".tmp") not in sigs:
+            stale.unlink(missing_ok=True)
 
-    # Write to a temp file so an interrupted run never leaves a truncated "finished" WAV behind.
-    tmp_path = merged_path.with_suffix(".tmp.wav")
-    cmd = [
-        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error", *inputs,
-        "-filter_complex", graph, "-map", "[out]",
-        "-ar", str(SAMPLE_RATE), "-ac", "1", "-c:a", "pcm_s16le",
-        str(tmp_path),
-    ]
+    # Join the segments; each is padded to a whole number of rustle-map steps so the map lines up
+    tmp_merged = merged_path.with_suffix(".tmp.wav")
+    sources, offset = [], 0
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True)
-        if proc.returncode != 0:
-            raise RuntimeError(f"ffmpeg failed merging {date_str}:\n{proc.stderr.strip()[-200:]}")
-        regions = [(int(src["start"] * SAMPLE_RATE), int((src["start"] + src["duration"]) * SAMPLE_RATE),
-                    strength if levels[src["name"]]["rustle"] is None else levels[src["name"]]["rustle"])
-                   for src in describe_sources(file_list)]
-        mask = derustle_wav(tmp_path, regions)
+        with wave.open(str(tmp_merged), "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(SAMPLE_RATE)
+            for g in segs:
+                _, data = wavfile.read(seg_dir / f"{g['key']}.wav")
+                pad = (-len(data)) % RUSTLE_HOP
+                w.writeframes(data.astype(np.int16).tobytes() + bytes(2 * pad))
+                masks.append(np.load(seg_dir / f"{g['key']}.npy"))
+                sources.append({"name": g["key"], "file": g["file"], "file_start": g["start"],
+                                "start": round(offset / SAMPLE_RATE, 3), "duration": round((len(data) + pad) / SAMPLE_RATE, 3),
+                                "recorded_at": g["recorded_at"], "bytes": sigs[g["key"]]["size"]})
+                offset += len(data) + pad
+        mask = np.concatenate(masks)
         np.save(mask_path, mask)
-        log(f"      rustle suppressed in {mask.mean() * 100:.0f}% of the audio")
-        tmp_path.replace(merged_path)
-        manifest.write_text(json.dumps(names), encoding="utf-8")
+        tmp_merged.replace(merged_path)
     finally:
-        tmp_path.unlink(missing_ok=True)
-    return merged_path
+        tmp_merged.unlink(missing_ok=True)
+    manifest.write_text(json.dumps({"sig": sigs, "sources": sources}), encoding="utf-8")
+    total = sum(probe_duration(f) for f in file_list)
+    log(f"      {len(segs)} speech segment(s): {offset / SAMPLE_RATE / 60:.0f} of {total / 60:.0f} min kept; "
+        f"rustle suppressed in {mask.mean() * 100:.0f}% of it")
+    return merged_path, sources
 
 
 # --- CLOTHING RUSTLE SUPPRESSION ---
@@ -594,7 +631,7 @@ def save_levels(updates: dict[str, dict], reviewed: bool = True) -> dict[str, di
     with _levels_lock:
         data = load_levels()
         for name, lv in updates.items():
-            if not FILE_PATTERN.match(name):
+            if not (FILE_PATTERN.match(name) or SEGMENT_KEY_RE.match(name)):
                 continue
             cur = clip_levels(name)
             rustle = lv.get("rustle", cur["rustle"])
@@ -647,15 +684,17 @@ def decode_mono(path: Path, start: float = 0.0, seconds: float | None = None, ch
 _analysis_cache: dict[tuple, dict] = {}
 
 
-def analyze_clip(path: Path) -> dict:
-    """Level statistics, problems and a waveform for one recording (cached per file version)."""
-    key = (str(path), path.stat().st_size, path.stat().st_mtime)
+def analyze_clip(path: Path, start: float = 0.0, seconds: float | None = None, name: str | None = None) -> dict:
+    """Level statistics, problems and a waveform for a recording, or just the part of it from `start` for
+    `seconds` (a segment). Cached per file version."""
+    key = (str(path), path.stat().st_size, path.stat().st_mtime, start, seconds)
     if key in _analysis_cache:
         return _analysis_cache[key]
     db = lambda v: 20 * np.log10(np.maximum(v, 1e-9))
-    x = decode_mono(path)
+    x = decode_mono(path, start, seconds)
     # Clipping is judged on the original samples: runs of 3+ pinned near full scale
-    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-f", "f32le", "-"], capture_output=True).stdout
+    cut = ["-ss", f"{start:.3f}"] + (["-t", f"{seconds:.3f}"] if seconds else [])
+    raw = subprocess.run(["ffmpeg", "-v", "error", *cut, "-i", str(path), "-f", "f32le", "-"], capture_output=True).stdout
     r = np.abs(np.frombuffer(raw, np.float32)) >= 0.98
     clipped_pct = float((np.convolve(r.astype(np.int8), np.ones(3, np.int8), mode="same") >= 3).mean() * 100) if len(r) else 0.0
     del raw, r
@@ -688,7 +727,7 @@ def analyze_clip(path: Path) -> dict:
     if floor > NOISY_FLOOR_DB and speech - floor < 15:
         issues.append({"code": "noisy", "label": "Noisy",
                        "detail": f"Background noise sits at {floor:.0f} dBFS, close to the speech ({speech:.0f} dBFS)."})
-    result = {"name": path.name, "duration": round(len(x) / SAMPLE_RATE, 2), "peak_db": round(peak, 1),
+    result = {"name": name or path.name, "duration": round(len(x) / SAMPLE_RATE, 2), "peak_db": round(peak, 1),
               "speech_db": round(speech, 1), "floor_db": round(floor, 1), "clipped_pct": round(clipped_pct, 3),
               "rustle_pct": round(rustle_pct, 1), "issues": issues, "peaks": peaks, "rms": rmsb}
     result["auto"] = auto_levels(result)
@@ -737,22 +776,22 @@ def auto_levels(a: dict) -> dict:
     return {"levels": lv, "notes": notes, "problems": problems, "confident": not problems}
 
 
-def flagged_clips(files: list[Path], autofix: bool = False) -> list[str]:
-    """Recordings with problems that the user hasn't looked at yet. With autofix, problems the
-    auto-adjust rules can confidently fix are fixed (and saved) instead of being reported."""
+def flagged_clips(segs: list[dict], autofix: bool = False) -> list[str]:
+    """Segments with problems that the user hasn't looked at yet (returns their keys). With autofix, problems
+    the auto-adjust rules can confidently fix are fixed (and saved) instead of being reported."""
     flagged = []
-    for f in files:
-        if clip_levels(f.name)["reviewed"]:
+    for seg in segs:
+        if clip_levels(seg["key"])["reviewed"]:
             continue
-        a = analyze_clip(f)
+        a = analyze_segment(seg)
         if not a["issues"]:
             continue
         if autofix and a["auto"]["confident"]:
-            save_levels({f.name: {**a["auto"]["levels"], "auto": True}})
-            log(f"      {f.name}: {', '.join(i['label'].lower() for i in a['issues'])} -> auto-adjusted "
+            save_levels({seg["key"]: {**a["auto"]["levels"], "auto": True}})
+            log(f"      {seg['key']}: {', '.join(i['label'].lower() for i in a['issues'])} -> auto-adjusted "
                 f"({', '.join(a['auto']['notes'])})")
             continue
-        flagged.append(f.name)
+        flagged.append(seg["key"])
     return flagged
 
 
@@ -770,117 +809,136 @@ def preview_wav(path: Path, start: float, lv: dict, seconds: float = 10.0) -> by
 
 
 # --- SEGMENTS: a day split wherever real speech stops for a long time ---
+def speech_spans(x: np.ndarray) -> list[tuple[float, float]]:
+    """(start, end) seconds of the stretches of one recording that contain speech. Steady noise (a fan)
+    can't count as speech: a frame is speech only when its voice band rises well above the local noise
+    floor (the quietest fifth of the surrounding minute) and isn't clothing rustle. Stretches closer than
+    SEGMENT_GAP_SECONDS are joined; ones with almost no speech are dropped."""
+    from scipy.ndimage import percentile_filter
+    frame = SAMPLE_RATE // 50                                    # 20 ms
+    nf = len(x) // frame // 5 * 5
+    if nf < 5:
+        return []
+    freqs = np.fft.rfftfreq(frame, 1 / SAMPLE_RATE)
+    voice, high = (freqs >= 100) & (freqs < 1000), freqs >= 2500
+    win = np.hanning(frame).astype(np.float32)
+    v, h = np.empty(nf, np.float32), np.empty(nf, np.float32)
+    for a in range(0, nf, 20000):
+        b = min(nf, a + 20000)
+        p = np.abs(np.fft.rfft(x[a * frame:b * frame].reshape(-1, frame) * win, axis=1)) ** 2
+        v[a:b], h[a:b] = p[:, voice].sum(1), p[:, high].sum(1)
+    v, h = v.reshape(-1, 5).mean(1), h.reshape(-1, 5).mean(1)    # 100 ms
+    vdb = 10 * np.log10(v + 1e-9)
+    floor = percentile_filter(vdb, 20, size=600, mode="nearest")
+    speechy = (vdb > floor + SEGMENT_SPEECH_DB) & (h < 1.5 * v)
+    sec = speechy[:len(speechy) // 10 * 10].reshape(-1, 10).sum(1) >= SEGMENT_MIN_FRAMES   # a second with enough speechy tenths
+    # Speech comes in runs; scattered single seconds (a clatter, a door) don't count
+    sec &= np.convolve(sec.astype(np.int8), np.ones(11, np.int8), mode="same") >= SEGMENT_DENSITY
+    spans, start, last = [], None, None
+    for i in np.flatnonzero(sec):
+        if start is not None and i - last >= SEGMENT_GAP_SECONDS:
+            spans.append((start, last + 1))
+            start = None
+        if start is None:
+            start = i
+        last = i
+    if start is not None:
+        spans.append((start, last + 1))
+    total = len(x) / SAMPLE_RATE
+    return [(float(max(0.0, a - SEGMENT_PAD_SECONDS)), float(min(total, b + SEGMENT_PAD_SECONDS)))
+            for a, b in spans if sec[a:b].sum() >= SEGMENT_MIN_SPEECH_SECONDS]
+
+
+SEGMENT_KEY_RE = re.compile(r"^(V\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}[^@]*)@(\d+)$")
+
+
+def segments_path(date: str) -> Path:
+    return day_dir(date) / "segments.json"
+
+
+def day_segments(date: str, files: list[Path]) -> list[dict]:
+    """The day's speech segments, one per stretch of speech inside a recording (never across two recordings).
+    A segment is identified by its key '<recording name>@<start second>', which is also where its levels are saved.
+    Found once per set of recordings and remembered in <date>/segments.json."""
+    params = [SEGMENT_GAP_SECONDS, SEGMENT_PAD_SECONDS, SEGMENT_MIN_SPEECH_SECONDS, SEGMENT_SPEECH_DB, SEGMENT_MIN_FRAMES, SEGMENT_DENSITY]
+    sig = {"files": [[f.name, f.stat().st_size] for f in files], "params": params}
+    try:
+        saved = json.loads(segments_path(date).read_text(encoding="utf-8"))
+        if saved.get("sig") == sig:
+            return saved["segments"]
+    except (OSError, json.JSONDecodeError, KeyError):
+        pass
+    segs = []
+    for f in files:
+        x = decode_mono(f)
+        total = len(x) / SAMPLE_RATE
+        h, m, s = (int(v) for v in (recorded_at(f.name) or "00:00:00").split(":"))
+        spans = speech_spans(x)
+        if not spans and total < 120:
+            spans = [(0.0, total)]   # a short clip: let transcription decide rather than risk losing a few words
+        for a, b in spans:
+            a, b = int(a), min(int(np.ceil(b)), int(total))   # whole seconds: the start is part of the key
+            if b - a < 1:
+                continue
+            t = (h * 3600 + m * 60 + s + a) % 86400
+            segs.append({"key": f"{f.stem}@{a:05d}", "file": f.name, "start": a, "end": b, "duration": b - a,
+                         "recorded_at": f"{t // 3600:02d}:{t % 3600 // 60:02d}:{t % 60:02d}"})
+        del x
+    day_dir(date).mkdir(parents=True, exist_ok=True)
+    segments_path(date).write_text(json.dumps({"sig": sig, "segments": segs}, indent=1), encoding="utf-8")
+    return segs
+
+
+def segment_source(key: str) -> tuple[Path, int] | None:
+    """The recording a segment key points into, and where the segment starts in it."""
+    m = SEGMENT_KEY_RE.match(key)
+    if not m:
+        return None
+    path = next((f for f in INPUT_DIR.iterdir() if f.is_file() and f.stem == m.group(1) and f.suffix.lower() in RECORDING_SUFFIXES), None) \
+        if INPUT_DIR.is_dir() else None
+    return (path, int(m.group(2))) if path else None
+
+
+def segment_dir(date: str) -> Path:
+    return day_dir(date) / "segments"
+
+
+def analyze_segment(seg: dict) -> dict:
+    return analyze_clip(INPUT_DIR / seg["file"], seg["start"], seg["duration"], seg["key"])
+
+
 def day_parts(data: dict, gap: float = SEGMENT_GAP_SECONDS) -> list[dict]:
-    """Stretches of real speech separated by at least `gap` seconds without any. Noise lines don't count,
-    so a fan or rustle that keeps the recorder running doesn't hold two meetings together."""
+    """The day's segments with their lines and speakers. New transcripts are built from segments, so those
+    are used as they are; older ones (one source per recording) are split wherever real speech stops for
+    `gap` seconds, so a fan or rustle that keeps the recorder running doesn't hold two meetings together."""
+    lines = sorted((s for s in data.get("segments", []) if not s.get("noise")), key=lambda s: s["start"])
+    own = [s for s in data.get("sources", []) if isinstance(s, dict) and "file" in s]
     parts, talk = [], []
-    for s in sorted((s for s in data.get("segments", []) if not s.get("noise")), key=lambda s: s["start"]):
-        who = s.get("speaker", "Unknown")
-        if parts and s["start"] - parts[-1]["end"] < gap:
-            p = parts[-1]
-            p["end"] = max(p["end"], s["end"])
-            p["lines"] += 1
-        else:
-            parts.append({"start": s["start"], "end": s["end"], "lines": 1})
+    if own:
+        for src in own:
+            end = src["start"] + src["duration"]
+            parts.append({"start": src["start"], "end": end, "lines": 0})
             talk.append({})
-        talk[-1][who] = talk[-1].get(who, 0.0) + s["end"] - s["start"]
+            for s in lines:
+                if src["start"] - 0.01 <= s["start"] < end:
+                    parts[-1]["lines"] += 1
+                    talk[-1][s.get("speaker", "Unknown")] = talk[-1].get(s.get("speaker", "Unknown"), 0.0) + s["end"] - s["start"]
+    else:
+        for s in lines:
+            who = s.get("speaker", "Unknown")
+            if parts and s["start"] - parts[-1]["end"] < gap:
+                p = parts[-1]
+                p["end"] = max(p["end"], s["end"])
+                p["lines"] += 1
+            else:
+                parts.append({"start": s["start"], "end": s["end"], "lines": 1})
+                talk.append({})
+            talk[-1][who] = talk[-1].get(who, 0.0) + s["end"] - s["start"]
     for p, t in zip(parts, talk):
         p["speakers"] = sorted(t, key=t.get, reverse=True)
     return parts
 
 
-def leveling_path(date: str) -> Path:
-    return day_dir(date) / "leveling.json"
-
-
-def load_leveling(date: str) -> list[dict]:
-    try:
-        return json.loads(leveling_path(date).read_text(encoding="utf-8")).get("parts", [])
-    except (OSError, json.JSONDecodeError):
-        return []
-
-
-def speech_level_db(x: np.ndarray, spans: list[tuple[int, int]]) -> float | None:
-    """Loud-speech level (95th percentile of 50 ms RMS) over the given sample spans of int16 audio."""
-    frame = SAMPLE_RATE // 20
-    chunks = [x[a:b].astype(np.float32) / 32768 for a, b in spans if b - a >= frame]
-    if not chunks:
-        return None
-    y = np.concatenate(chunks)
-    n = len(y) // frame
-    if n < 20:   # under a second of speech: too little to judge
-        return None
-    rms = np.sqrt((y[:n * frame].reshape(-1, frame) ** 2).mean(1))
-    return float(np.percentile(20 * np.log10(np.maximum(rms, 1e-9)), 95))
-
-
-def relevel_parts(date: str, targets: dict[float, float] | None = None) -> list[dict]:
-    """Bring each segment's speech to its target level in <date>/merged.wav, with ~1 s crossfades at the
-    boundaries (which sit in the long silences). Measures the audio as it is now, so running it again
-    changes little. `targets` maps a segment's start (seconds) to a manual target dBFS; other segments
-    keep the target saved last time, else SEGMENT_TARGET_DB. Returns the per-segment record."""
-    from scipy.io import wavfile
-    import wave
-    path = transcript_path(date)
-    wav = day_dir(date) / "merged.wav"
-    if not path.is_file() or not wav.is_file():
-        return []
-    data = load_transcript(path)
-    parts = day_parts(data)
-    if not parts:
-        return []
-    old = load_leveling(date)
-
-    def target_for(p):
-        for start, t in (targets or {}).items():
-            if abs(start - p["start"]) < 5:
-                return float(t)
-        prev = next((o for o in old if abs(o["start"] - p["start"]) < 5), None)
-        return prev["target_db"] if prev else SEGMENT_TARGET_DB
-
-    sr, x = wavfile.read(wav, mmap=True)
-    lines = [s for s in data["segments"] if not s.get("noise")]
-    record, gains = [], []
-    for p in parts:
-        spans = [(int(s["start"] * sr), int(s["end"] * sr)) for s in lines if p["start"] <= s["start"] <= p["end"]]
-        level, target = speech_level_db(x, spans), target_for(p)
-        gain = 0.0 if level is None else max(-SEGMENT_MAX_CUT_DB, min(SEGMENT_MAX_BOOST_DB, target - level))
-        gain = 0.0 if abs(gain) < 1.5 else round(gain, 1)   # already close enough: leave the audio alone
-        gains.append(gain)
-        record.append({"start": round(p["start"], 2), "end": round(p["end"], 2), "target_db": target,
-                       "before_db": None if level is None else round(level, 1),
-                       "after_db": None if level is None else round(level + gain, 1), "gain_db": gain})
-
-    if any(gains):
-        half = sr // 2
-        xs, ys = [0], [gains[0]]
-        for k in range(1, len(parts)):
-            mid = int((parts[k - 1]["end"] + parts[k]["start"]) / 2 * sr)
-            xs += [mid - half, mid + half]
-            ys += [gains[k - 1], gains[k]]
-        xs.append(len(x))
-        ys.append(gains[-1])
-        tmp = wav.with_suffix(".level.wav")
-        try:
-            with wave.open(str(tmp), "wb") as w:
-                w.setnchannels(1)
-                w.setsampwidth(2)
-                w.setframerate(sr)
-                piece = sr * 600
-                for a in range(0, len(x), piece):
-                    chunk = x[a:a + piece].astype(np.float32)
-                    env = 10 ** (np.interp(np.arange(a, a + len(chunk)), xs, ys) / 20)
-                    w.writeframes(np.clip(chunk * env, -32768, 32767).astype(np.int16).tobytes())
-            chunk = env = None
-            del x   # release the memory map before replacing the file (Windows)
-            tmp.replace(wav)
-        finally:
-            tmp.unlink(missing_ok=True)
-    leveling_path(date).write_text(json.dumps({"parts": record}, indent=2), encoding="utf-8")
-    return record
-
-
-# --- SPEAKER PROFILE MATCHER ---
 def unit(v) -> np.ndarray:
     v = np.asarray(v, dtype=np.float32).flatten()
     return v / (np.linalg.norm(v) or 1.0)
@@ -1546,13 +1604,12 @@ class Engine:
 
         try:
             report = step("merge")
-            audio_file = prepare_daily_audio(date_key, files)
+            audio_file, sources = prepare_daily_audio(date_key, files)
             audio = whisperx.load_audio(str(audio_file))
             finish("merge")
 
             report = step("transcribe")
-            # Each recording is transcribed with its own speech sensitivity, then put back on the day timeline
-            sources = describe_sources(files)
+            # Each segment is transcribed with its own speech sensitivity, then put back on the day timeline
             language = setting("language") or None
             self.whisper_model.tokenizer = None   # whisperx would otherwise reuse the previous day's language
             if not language:
@@ -1696,7 +1753,8 @@ class Engine:
                     "language": language,
                     "audio": audio_file.name,
                     "speaker_hint": hint,
-                    "sources": describe_sources(files),
+                    "sources": sources,
+                    "recordings": [{"name": f.name, "bytes": f.stat().st_size} for f in files],
                     "segments": timeline,
                     "trashed": trashed,
                     "line_prints": latest.get("line_prints", line_prints),   # incl. any taught while this ran
@@ -1708,13 +1766,6 @@ class Engine:
                 }, indent=2, ensure_ascii=False), encoding="utf-8")
                 tmp_out.replace(json_out)
             finish("save")
-            if setting("relevel_segments"):
-                try:
-                    lv = relevel_parts(date_key)
-                    if lv:
-                        log(f"      {len(lv)} segment(s); levelled: " + ", ".join(f"{p['gain_db']:+.0f} dB" for p in lv))
-                except Exception as e:   # the transcript is saved; a levelling problem must not fail the day
-                    log(f"      couldn't level the segments: {e}")
             if progress:
                 progress(1.0, "Done")
             log(f"  Done -> {json_out}  ({len(set(names.values()))} speakers, {len(timeline)} lines)")
@@ -1730,10 +1781,11 @@ def needs_processing(date_key: str, files: list[Path]) -> bool:
     if not path.exists():
         return True
     data = load_transcript(path)
-    if {f.name for f in files} - set(transcript_source_names(data)):
+    recs = transcript_recordings(data)
+    if {f.name for f in files} - {r["name"] for r in recs}:
         return True
     # A recording that was still being copied when the day was transcribed has since grown
-    sizes = {s["name"]: s.get("bytes") for s in data.get("sources", []) if isinstance(s, dict)}
+    sizes = {r["name"]: r.get("bytes") for r in recs}
     return any(sizes.get(f.name) not in (None, f.stat().st_size) for f in files)
 
 
@@ -2064,6 +2116,15 @@ def part_count(path: Path) -> int:
 
 def transcript_source_names(data: dict) -> list[str]:
     return [s["name"] if isinstance(s, dict) else s for s in data.get("sources", [])]
+
+
+def transcript_recordings(data: dict) -> list[dict]:
+    """The recordings a day was transcribed from ({name, bytes}). Sources are segments now, so newer
+    transcripts list the recordings separately; older ones had one source per recording."""
+    if "recordings" in data:
+        return data["recordings"]
+    return [{"name": s["name"], "bytes": s.get("bytes")} if isinstance(s, dict) else {"name": s, "bytes": None}
+            for s in data.get("sources", [])]
 
 
 def transcript_sources(data: dict) -> list[dict]:
@@ -2979,8 +3040,8 @@ class Processor:
                 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
                 # A recording that's very quiet / clipped / noisy and hasn't been looked at stops the whole
                 # queue until the user sets its levels in the viewer (or accepts it as is, or skips the day)
-                self._set(label="Checking audio levels")
-                flagged = flagged_clips(files, autofix=True)
+                self._set(label="Finding speech and checking audio levels")
+                flagged = flagged_clips(day_segments(date, files), autofix=True)
                 if flagged:
                     log(f"[viewer] {date}: waiting for levels on {', '.join(flagged)}")
                     with self.lock:
@@ -3060,7 +3121,6 @@ def create_app(auto_process: bool = False, force: bool = False):
         setup_done: bool | None = None
         auto_transcribe: bool | None = None
         auto_sync: bool | None = None
-        relevel_segments: bool | None = None
         language: str | None = None
         rustle_strength: float | None = None
 
@@ -3081,19 +3141,19 @@ def create_app(auto_process: bool = False, force: bool = False):
 
     @app.get("/api/days/{date}/clips")
     def day_clips(date: str):
-        """Every recording of the day with its levels, problems and waveform, for the levels dialog."""
+        """Every speech segment of the day with its levels, problems and waveform, for the levels dialog."""
         check_date(date)
         files = get_daily_batches(INPUT_DIR).get(date)
         if not files:
             raise HTTPException(404, f"No recordings for {date} in {INPUT_DIR}")
         clips = []
-        for f in files:
+        for seg in day_segments(date, files):
             try:
-                info = analyze_clip(f)
+                info = analyze_segment(seg)
             except RuntimeError as e:
-                info = {"name": f.name, "duration": probe_duration(f), "issues": [{"code": "unreadable", "label": "Unreadable", "detail": str(e)}],
+                info = {"name": seg["key"], "duration": seg["duration"], "issues": [{"code": "unreadable", "label": "Unreadable", "detail": str(e)}],
                         "suggested": {}, "peaks": [], "rms": []}
-            clips.append({**info, "recorded_at": recorded_at(f.name), "levels": clip_levels(f.name)})
+            clips.append({**info, "recorded_at": seg["recorded_at"], "file": seg["file"], "levels": clip_levels(seg["key"])})
         return {"date": date, "clips": clips, "default_rustle": setting("rustle_strength"),
                 "sensitivity_labels": {1: "Lowest", 2: "Low", 3: "Normal", 4: "High", 5: "Highest"}}
 
@@ -3112,12 +3172,15 @@ def create_app(auto_process: bool = False, force: bool = False):
     @app.get("/api/clips/{name}/preview")
     def clip_preview(name: str, start: float = 0.0, gain_db: float = 0.0, gate_db: float | None = None,
                      rustle: float | None = None, declip: bool = False):
-        """~10 s of the recording processed exactly as transcription will hear it."""
+        """~10 s of the segment processed exactly as transcription will hear it (start = seconds into the segment)."""
         from fastapi.responses import Response
-        path = recording_path(name)
+        found = segment_source(name)
+        if found is None:
+            raise HTTPException(404, "Not a segment")
+        path, seg_start = found
         lv = {"gain_db": gain_db, "gate_db": gate_db, "rustle": rustle, "declip": declip}
         try:
-            return Response(preview_wav(path, start, lv), media_type="audio/wav", headers={"Cache-Control": "no-store"})
+            return Response(preview_wav(path, seg_start + max(0.0, start), lv), media_type="audio/wav", headers={"Cache-Control": "no-store"})
         except RuntimeError as e:
             raise HTTPException(500, str(e))
 
@@ -3199,7 +3262,7 @@ def create_app(auto_process: bool = False, force: bool = False):
                     talk: dict[str, float] = {}
                     for s in (s for s in segs if not s.get("noise")):
                         talk[s.get("speaker")] = talk.get(s.get("speaker"), 0) + s["end"] - s["start"]
-                    known = set(transcript_source_names(data))
+                    known = {r["name"] for r in transcript_recordings(data)}
                     src_total = sum(s.get("duration") or 0 for s in transcript_sources(data))
                     day.update({
                         "status": "ready",
@@ -3242,9 +3305,7 @@ def create_app(auto_process: bool = False, force: bool = False):
             # The viewer only needs which lines taught whom, not the 256-number embeddings
             data["line_prints"] = [{"start": p["start"], "text": p["text"], "person": p["person"]}
                                    for p in data.get("line_prints", [])]
-            levels = load_leveling(date)
-            data["parts"] = [{**p, "level": next((o for o in levels if abs(o["start"] - p["start"]) < 5), None)}
-                             for p in day_parts(data)]
+            data["parts"] = day_parts(data)
             data["status"] = "ready"
         else:
             files = get_daily_batches(INPUT_DIR).get(date)
@@ -3322,7 +3383,8 @@ def create_app(auto_process: bool = False, force: bool = False):
                 src = s
         if src is None:
             raise HTTPException(400, "Can't tell which recording that line came from")
-        rec = recording_path(src["name"])
+        rec = recording_path(src.get("file") or src["name"])
+        base = src.get("file_start", 0.0)   # segments start part-way into their recording
         # Padding keeps the first and last word from being clipped; stay inside the one recording the line is in
         a = max(0.0, body.start - src["start"] - CLIP_PAD_SECONDS)
         b = min(src["duration"], body.end - src["start"] + CLIP_PAD_SECONDS)
@@ -3340,7 +3402,7 @@ def create_app(auto_process: bool = False, force: bool = False):
         while out.exists():
             out = out_dir / f"{stem} ({n}).mp3"
             n += 1
-        res = subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", f"{a:.3f}", "-t", f"{b - a:.3f}", "-i", str(rec),
+        res = subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", f"{base + a:.3f}", "-t", f"{b - a:.3f}", "-i", str(rec),
                               "-vn", "-ac", "1", "-codec:a", "libmp3lame", "-q:a", "2", str(out)],
                              capture_output=True, text=True)
         if res.returncode != 0 or not out.is_file():
@@ -3586,22 +3648,6 @@ def create_app(auto_process: bool = False, force: bool = False):
             raise HTTPException(404, f"No voice profile called {body.name}")
         log(f"Deleted voice profile '{body.name}' (transcripts unchanged)")
         return {"ok": True}
-
-    class LevelBody(BaseModel):
-        start: float
-        target_db: float
-
-    @app.post("/api/days/{date}/parts/level")
-    def level_part(date: str, body: LevelBody):
-        """Re-level one segment of the day to a target speech level (dBFS); rewrites merged.wav."""
-        check_date(date)
-        if not transcript_path(date).is_file():
-            raise HTTPException(404, f"No transcript for {date}")
-        target = min(max(body.target_db, -36.0), -6.0)
-        with TRANSCRIPT_LOCK:
-            record = relevel_parts(date, {body.start: target})
-        log(f"{date}: segment at {body.start:.0f}s levelled to {target:.0f} dBFS")
-        return {"levels": record}
 
     class MeetingBody(BaseModel):
         name: str = ""
