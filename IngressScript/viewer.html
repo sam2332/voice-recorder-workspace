@@ -2546,9 +2546,14 @@
       });
       undo.type = 'button'; head.append(undo);
     }
-    if (v.match > 0 && !v.named && !state.reviewOk.has(v.spk) && !state.reviewNamed.has(v.spk)) {
-      const ok = btn('Looks right', 'small', e => { e.preventDefault(); e.stopPropagation(); state.reviewOk.add(v.spk); renderVoiceReview(); });
+    const confirmable = !draft && !v.named && !state.reviewOk.has(v.spk) && !state.reviewNamed.has(v.spk);
+    if (confirmable && v.match > 0) {
+      const ok = btn('Confirm', 'small', e => { e.preventDefault(); e.stopPropagation(); state.reviewOk.add(v.spk); renderVoiceReview(); });
       ok.type = 'button'; head.append(ok);
+    } else if (confirmable && sugg[0]) {
+      const ok = btn('Confirm', 'small', e => { e.preventDefault(); e.stopPropagation(); stageVoiceReview(v.spk, 'person', sugg[0].name); });
+      ok.type = 'button'; ok.title = `Confirm this voice as ${displayName(sugg[0].name)}`;
+      head.append(ok);
     }
     // Which recordings this voice is in (the start time of each recording)
     const recs = [...new Set(v.lines.map(x => srcIndexAt(x.start)).filter(i => i >= 0))].sort((a, b) => a - b);
