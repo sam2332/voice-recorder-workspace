@@ -19,7 +19,6 @@ import json
 import time
 import uuid
 import shutil
-import sqlite3
 import argparse
 import threading
 import subprocess
@@ -31,6 +30,15 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+from app_config import DB_PATH, HF_TOKEN
+from storage import init_db, list_speakers
+from voice_memory import (
+    configure, unit, VoiceMemory,
+    tv_names, mark_tv, teach_voice, train_lines, similar_lines, split_voice, restore_line_prints,
+    voice_profiles, delete_voiceprint, delete_profile, set_profile_kind,
+    RenameError, NameTaken, rename_speaker_core, rename_in_overlaps,
+)
+
 # We always hand pyannote in-memory audio, so its torchcodec file decoder is never used.
 warnings.filterwarnings("ignore", message=r"(?s).*torchcodec is not installed correctly")
 
@@ -38,8 +46,6 @@ warnings.filterwarnings("ignore", message=r"(?s).*torchcodec is not installed co
 SCRIPT_DIR = Path(__file__).resolve().parent
 INPUT_DIR = Path(os.getenv("RECORD_DIR", SCRIPT_DIR.parent / "RECORD"))          # Your voice recorder mount
 OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR", SCRIPT_DIR / "processed_daily"))
-DB_PATH = Path(os.getenv("SPEAKER_DB", SCRIPT_DIR / "speaker_memory.db"))
-HF_TOKEN = os.getenv("HF_TOKEN")   # HuggingFace token for pyannote models
 LANGUAGE = os.getenv("LANGUAGE") or None  # e.g. "en"; unset = auto-detect from the first 30s
 MIN_RECORDING_SECONDS = 3.0        # Skip accidental taps / clicks
 CLIP_PAD_SECONDS = 0.4             # Extra audio kept either side of a saved clip so no word is cut off
@@ -47,13 +53,9 @@ CLIP_PAD_SECONDS = 0.4             # Extra audio kept either side of a saved cli
 # Speaker detection. Voiceprints are the diarization pipeline's own per-speaker centroids
 # (wespeaker embeddings averaged over each speaker's clean, non-overlapping speech).
 SAME_PERSON_THRESHOLD = 0.75       # Two of today's clusters this similar are one person, re-joined
-MATCH_THRESHOLD = 0.68             # Similarity needed to name a voice automatically as a known person
-SUGGEST_THRESHOLD = 0.45           # Weaker matches are only offered as suggestions in the viewer
-MIN_VOICE_SECONDS = 20.0           # Voices with less speech than this are never enrolled as a new person
 MIN_SPEECH_UNDER_LINE = 0.3        # Lines with less detected voice under them than this are flagged as noise
 OVERLAP_MIN_SECONDS = 0.4          # Someone else talking at least this long during a line...
 OVERLAP_MIN_SHARE = 0.2            # ...or this share of it, tags the line "talking over: <name>"
-MAX_VOICEPRINTS = 40               # Stored voiceprints kept per person (oldest dropped)
 
 # Whisper voice-activity detection: lower = picks up quieter / more distant speech
 VAD_ONSET = 0.35
@@ -298,44 +300,6 @@ class Syncer:
                 p.unlink(missing_ok=True)
         finally:
             self._set(running=False, current=None, finished=time.time())
-
-
-# --- DATABASE SETUP ---
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS speakers (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT UNIQUE,
-            embedding BLOB,
-            sample_count INTEGER DEFAULT 1
-        );
-        -- Several voiceprints per person (one per day they were heard), so matching
-        -- copes with different rooms, mics and moods instead of one blurred average.
-        CREATE TABLE IF NOT EXISTS voiceprints (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            speaker_id INTEGER NOT NULL REFERENCES speakers(id) ON DELETE CASCADE,
-            embedding BLOB NOT NULL,
-            seconds REAL,
-            day TEXT,
-            created REAL
-        );
-    """)
-    # Which of the day's diarization voices a print came from, so naming that voice can move it
-    if "label" not in {r[1] for r in conn.execute("PRAGMA table_info(voiceprints)")}:
-        conn.execute("ALTER TABLE voiceprints ADD COLUMN label TEXT")
-    # kind = 'tv' marks a TV / YouTube / music voice: matched like a person, but its lines are hidden as noise
-    if "kind" not in {r[1] for r in conn.execute("PRAGMA table_info(speakers)")}:
-        conn.execute("ALTER TABLE speakers ADD COLUMN kind TEXT")
-    # Older databases kept a single averaged embedding per speaker; keep it as a 'legacy' print
-    conn.execute("""
-        INSERT INTO voiceprints (speaker_id, embedding, seconds, day, created)
-        SELECT id, embedding, 0, 'legacy', 0 FROM speakers s
-        WHERE embedding IS NOT NULL AND NOT EXISTS (SELECT 1 FROM voiceprints v WHERE v.speaker_id = s.id)
-    """)
-    conn.commit()
-    return conn
 
 
 # --- AUDIO PRE-PROCESSING ---
@@ -939,444 +903,6 @@ def day_parts(data: dict, gap: float = SEGMENT_GAP_SECONDS) -> list[dict]:
     return parts
 
 
-def unit(v) -> np.ndarray:
-    v = np.asarray(v, dtype=np.float32).flatten()
-    return v / (np.linalg.norm(v) or 1.0)
-
-
-class VoiceMemory:
-    """Remembers people across days. Each person has several voiceprints (one per day heard)."""
-
-    def __init__(self):
-        self.conn = None   # opened per assign() call: SQLite connections can't cross threads,
-                           # and the background worker thread changes between jobs
-
-    def people(self) -> dict[int, tuple[str, np.ndarray]]:
-        rows = self.conn.execute(
-            "SELECT s.id, s.name, v.embedding, v.day FROM speakers s JOIN voiceprints v ON v.speaker_id = s.id"
-        ).fetchall()
-        prints: dict[int, dict] = {}
-        for spk_id, name, blob, day in rows:
-            p = prints.setdefault(spk_id, {"name": name, "new": [], "legacy": []})
-            p["legacy" if day == "legacy" else "new"].append(unit(np.frombuffer(blob, dtype=np.float32)))
-        # Legacy prints came from an older, noisier method; ignore them once real ones exist
-        return {i: (p["name"], np.array(p["new"] or p["legacy"])) for i, p in prints.items()}
-
-    @staticmethod
-    def score(emb: np.ndarray, prints: np.ndarray) -> float:
-        """Average of the 3 closest voiceprints: robust to one odd day, but not fooled by a single fluke."""
-        sims = np.sort(prints @ emb)[::-1]
-        return float(sims[:3].mean())
-
-    def _unique_name(self) -> str:
-        existing = {r[0] for r in self.conn.execute("SELECT name FROM speakers")}
-        n = (self.conn.execute("SELECT COALESCE(MAX(id), 0) FROM speakers").fetchone()[0]) + 1
-        while f"Speaker_{n}" in existing:
-            n += 1
-        return f"Speaker_{n}"
-
-    def _speaker_id(self, name: str) -> int:
-        row = self.conn.execute("SELECT id FROM speakers WHERE name = ?", (name,)).fetchone()
-        if row:
-            return row[0]
-        return self.conn.execute("INSERT INTO speakers (name, sample_count) VALUES (?, 0)", (name,)).lastrowid
-
-    def assign(self, day: str, voices: dict[str, tuple[np.ndarray, float]], prior: dict[str, str]) -> tuple[dict, dict]:
-        """Name today's voices. `voices` maps label -> (embedding, seconds spoken); `prior` maps
-        label -> name kept from an earlier transcript of this same day (so renames survive).
-        Returns (label -> name, label -> {"match", "candidates"}) where candidates are the closest
-        known people with their similarity, for the viewer to suggest."""
-        self.conn = init_db()
-        try:
-            return self._assign(day, voices, prior)
-        finally:
-            self.conn.close()
-            self.conn = None
-
-    def _assign(self, day: str, voices: dict[str, tuple[np.ndarray, float]], prior: dict[str, str]) -> tuple[dict, dict]:
-        cur = self.conn
-        # Re-transcribing a day replaces its voiceprints rather than counting it twice
-        cur.execute("DELETE FROM voiceprints WHERE day = ?", (day,))
-        people = self.people()
-        names: dict[str, str] = {}
-        taken: set[int] = set()
-
-        for label, name in prior.items():
-            spk_id = self._speaker_id(name)
-            names[label] = name
-            taken.add(spk_id)
-            log(f"      {label}: kept earlier name '{name}'")
-
-        # Every voice's closest known people, for suggestions in the viewer
-        scores = {label: sorted(((self.score(emb, prints), spk_id) for spk_id, (_, prints) in people.items()), reverse=True)
-                  for label, (emb, _) in voices.items()}
-        info = {label: {"match": None, "candidates": [{"name": people[i][0], "score": round(sc, 3)}
-                                                      for sc, i in scores[label][:4] if sc >= SUGGEST_THRESHOLD]}
-                for label in voices}
-
-        # Best matches first, one person per voice (two voices can't both be the same known person)
-        pairs = sorted(((sc, label, spk_id) for label in voices if label not in names for sc, spk_id in scores[label]),
-                       reverse=True)
-        for score, label, spk_id in pairs:
-            if label in names or spk_id in taken or score < MATCH_THRESHOLD:
-                continue
-            names[label] = people[spk_id][0]
-            info[label]["match"] = round(score, 3)
-            taken.add(spk_id)
-            log(f"      {label}: matched '{names[label]}' (similarity {score:.2f})")
-
-        unknown = 0
-        for label in sorted(voices, key=lambda l: -voices[l][1]):
-            if label in names:
-                continue
-            best = info[label]["candidates"][0] if info[label]["candidates"] else None
-            if voices[label][1] < MIN_VOICE_SECONDS:
-                # Too little speech for a trustworthy new voiceprint: don't invent a person from it.
-                # Each still gets its own label so it can be named separately in the viewer.
-                unknown += 1
-                names[label] = f"Unknown voice {unknown}"
-                log(f"      {label}: only {voices[label][1]:.0f}s of speech; left as Unknown"
-                    + (f" (closest {best['name']} {best['score']:.2f})" if best else ""))
-                continue
-            names[label] = self._unique_name()
-            self._speaker_id(names[label])
-            log(f"      {label}: new voice '{names[label]}'" + (f" (closest {best['name']} {best['score']:.2f})" if best else ""))
-
-        # Store today's voiceprints; keep only the most recent MAX_VOICEPRINTS per person
-        now = time.time()
-        for label, (emb, seconds) in voices.items():
-            if names[label].startswith("Unknown"):
-                continue
-            spk_id = self._speaker_id(names[label])
-            cur.execute("DELETE FROM voiceprints WHERE speaker_id = ? AND day = 'legacy'", (spk_id,))
-            cur.execute("INSERT INTO voiceprints (speaker_id, embedding, seconds, day, created, label) VALUES (?, ?, ?, ?, ?, ?)",
-                        (spk_id, unit(emb).tobytes(), seconds, day, now, label))
-            cur.execute("""DELETE FROM voiceprints WHERE speaker_id = ? AND id NOT IN (
-                               SELECT id FROM voiceprints WHERE speaker_id = ? ORDER BY created DESC LIMIT ?)""",
-                        (spk_id, spk_id, MAX_VOICEPRINTS))
-            cur.execute("UPDATE speakers SET sample_count = (SELECT COUNT(*) FROM voiceprints WHERE speaker_id = ?) "
-                        "WHERE id = ?", (spk_id, spk_id))
-
-        # Re-transcribing can leave behind people who no longer appear anywhere; forget them
-        forget_unused_speakers(cur, keep=set(names.values()), skip_day=day)
-        cur.commit()
-        return names, info
-
-
-def forget_unused_speakers(conn, keep: set[str] = frozenset(), skip_day: str | None = None):
-    """Delete people with no voiceprints whose name no transcript uses."""
-    in_use = set(keep)
-    for other, path in all_transcripts():
-        if other != skip_day:
-            in_use |= {s.get("speaker") for s in load_transcript(path).get("segments", [])}
-    for spk_id, name in conn.execute("SELECT id, name FROM speakers s WHERE NOT EXISTS "
-                                     "(SELECT 1 FROM voiceprints v WHERE v.speaker_id = s.id)").fetchall():
-        if name not in in_use:
-            conn.execute("DELETE FROM speakers WHERE id = ?", (spk_id,))
-
-
-def tv_names() -> set[str]:
-    """Voice profiles the user marked as TV / YouTube (their lines are always hidden as noise)."""
-    conn = init_db()
-    try:
-        return {r[0] for r in conn.execute("SELECT name FROM speakers WHERE kind = 'tv'")}
-    finally:
-        conn.close()
-
-
-def mark_tv(name: str):
-    conn = init_db()
-    try:
-        conn.execute("INSERT OR IGNORE INTO speakers (name, sample_count) VALUES (?, 0)", (name,))
-        conn.execute("UPDATE speakers SET kind = 'tv' WHERE name = ?", (name,))
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def teach_voice(date: str, old: str, new: str, labels: list[str] | None = None) -> tuple[list[str], bool]:
-    """Naming a voice on a day also teaches it: that day's sample of the voice moves to `new`'s global
-    profile, so future days recognise them. Other days' transcripts are not rewritten.
-    Returns (voice labels changed, whether a sample was available to learn from)."""
-    path = transcript_path(date)
-    with TRANSCRIPT_LOCK:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        targets = [v for v in data.get("voices", [])
-                   if (v.get("label") in labels if labels is not None else v.get("name") == old)]
-        for v in targets:
-            v["name"] = new
-            v["named"] = not re.match(r"(Unknown voice \d+|Speaker_\d+)$", new)   # undo back to an automatic name
-            v.pop("tv", None)   # the TV endpoint sets it again after this
-        if targets:
-            write_transcript(path, data)
-    conn = init_db()
-    learned = False
-    try:
-        old_row = conn.execute("SELECT id FROM speakers WHERE name = ?", (old,)).fetchone()
-        new_id = None
-        if not new.startswith("Unknown"):
-            row = conn.execute("SELECT id FROM speakers WHERE name = ?", (new,)).fetchone()
-            new_id = row[0] if row else conn.execute("INSERT INTO speakers (name, sample_count) VALUES (?, 0)", (new,)).lastrowid
-        now = time.time()
-        for v in targets:
-            emb = v.get("embedding")
-            if emb:
-                # Replace whatever this voice left on this day (under any name) with a print for `new`
-                conn.execute("DELETE FROM voiceprints WHERE day = ? AND label = ?", (date, v["label"]))
-                if new_id:
-                    conn.execute("INSERT INTO voiceprints (speaker_id, embedding, seconds, day, created, label) "
-                                 "VALUES (?, ?, ?, ?, ?, ?)",
-                                 (new_id, unit(np.array(emb, np.float32)).tobytes(), v.get("seconds", 0), date, now, v["label"]))
-                    learned = True
-            elif old_row and new_id:
-                # Older transcript without samples: move the day's print the old name had, if any
-                learned = conn.execute("UPDATE voiceprints SET speaker_id = ? WHERE speaker_id = ? AND day = ?",
-                                       (new_id, old_row[0], date)).rowcount > 0 or learned
-        for spk in {new_id, old_row[0] if old_row else None} - {None}:
-            conn.execute("""DELETE FROM voiceprints WHERE speaker_id = ? AND id NOT IN (
-                                SELECT id FROM voiceprints WHERE speaker_id = ? ORDER BY created DESC LIMIT ?)""",
-                         (spk, spk, MAX_VOICEPRINTS))
-            conn.execute("UPDATE speakers SET sample_count = (SELECT COUNT(*) FROM voiceprints WHERE speaker_id = ?) "
-                         "WHERE id = ?", (spk, spk))
-        forget_unused_speakers(conn, keep={new})
-        conn.commit()
-    finally:
-        conn.close()
-    return [v["label"] for v in targets], learned
-
-
-# --- LINE VOICES (teach a voice from single lines the user moved to someone) ---
-# Same wespeaker model the diarization centroids come from, so line embeddings score directly against
-# stored voiceprints. Measured on the real 2026-10-01 day: lines of 2 s+ score 0.6-0.9 against their own
-# person; ~1 s lines are unreliable (0.2-0.5), so they are never learned from.
-# Test (scratch copy of 2026-10-01): 15 of Kenzie's lines moved to Lily. At 0.6/0.08 it found 6, all right;
-# at 0.45/0.2 it found 11 plus 1 wrong; other people got no suggestions. The user reviews each one, so the
-# looser setting is used and only lines at LINE_STRONG_MATCH or above come pre-ticked.
-MIN_TRAIN_LINE_SECONDS = 2.0       # Shorter lines are too little audio to learn a voice from
-LINE_MATCH_THRESHOLD = 0.45        # A line "sounds like" a person at or above this similarity...
-LINE_MATCH_MARGIN = 0.2            # ...and this much closer to them than to whoever it's assigned to now
-LINE_STRONG_MATCH = 0.6            # Pre-ticked in the viewer
-MAX_LINE_SUGGESTIONS = 40
-
-
-class LineVoices:
-    """Loads only the speaker-embedding model (small, ~2 s) on first use and embeds single lines of a day.
-    Embeddings are cached per day until merged.wav changes."""
-
-    def __init__(self):
-        self.lock = threading.Lock()
-        self.model = None
-        self.torch = None
-        self.cache: dict[str, tuple[float, dict]] = {}   # date -> (merged.wav mtime, {(start, end): unit emb})
-
-    def _load(self):
-        if self.model is None:
-            import torch
-            from pyannote.audio.pipelines.speaker_verification import PretrainedSpeakerEmbedding
-            warnings.filterwarnings("ignore", message=".*torchcodec.*")
-            self.torch = torch
-            self.model = PretrainedSpeakerEmbedding(
-                {"checkpoint": "pyannote/speaker-diarization-community-1", "subfolder": "embedding"},
-                token=HF_TOKEN, device=torch.device("cuda" if torch.cuda.is_available() else "cpu"))
-
-    def embed(self, date: str, spans: list[tuple[float, float]]) -> dict[tuple[float, float], np.ndarray]:
-        """Unit embeddings for (start, end) spans of the day's merged.wav (seconds)."""
-        from scipy.io import wavfile
-        wav = day_dir(date) / "merged.wav"
-        if not wav.is_file():
-            raise FileNotFoundError(f"No merged audio for {date}; re-transcribe the day first")
-        with self.lock:
-            self._load()
-            mtime = wav.stat().st_mtime
-            if self.cache.get(date, (None,))[0] != mtime:
-                self.cache[date] = (mtime, {})
-            known = self.cache[date][1]
-            sr, data = wavfile.read(wav, mmap=True)
-            for a, b in spans:
-                key = (round(a, 2), round(b, 2))
-                if key in known:
-                    continue
-                piece = np.asarray(data[int(a * sr):int(b * sr)], np.float32) / 32768.0
-                if len(piece) < sr // 2:
-                    continue
-                with self.torch.inference_mode():
-                    known[key] = unit(self.model(self.torch.from_numpy(piece)[None, None, :])[0].astype(np.float32))
-            return {(round(a, 2), round(b, 2)): known[(round(a, 2), round(b, 2))]
-                    for a, b in spans if (round(a, 2), round(b, 2)) in known}
-
-
-line_voices = LineVoices()
-
-
-def _same_line(a: dict, b: dict) -> bool:
-    return abs(a["start"] - b["start"]) < 0.02 and a["text"] == b["text"]
-
-
-def _store_line_print(conn, date: str, person: str, entries: list[dict]):
-    """One voiceprint per person per day built from their taught lines (mean of the line embeddings,
-    weighted by length), under label 'lines', so many short lines don't crowd out other days' prints."""
-    row = conn.execute("SELECT id FROM speakers WHERE name = ?", (person,)).fetchone()
-    spk_id = row[0] if row else conn.execute("INSERT INTO speakers (name, sample_count) VALUES (?, 0)", (person,)).lastrowid
-    conn.execute("DELETE FROM voiceprints WHERE speaker_id = ? AND day = ? AND label = 'lines'", (spk_id, date))
-    if entries:
-        w = np.array([e["seconds"] for e in entries], np.float32)
-        emb = unit((np.array([e["embedding"] for e in entries], np.float32) * w[:, None]).sum(0))
-        conn.execute("DELETE FROM voiceprints WHERE speaker_id = ? AND day = 'legacy'", (spk_id,))
-        conn.execute("INSERT INTO voiceprints (speaker_id, embedding, seconds, day, created, label) "
-                     "VALUES (?, ?, ?, ?, ?, 'lines')", (spk_id, emb.tobytes(), float(w.sum()), date, time.time()))
-    conn.execute("""DELETE FROM voiceprints WHERE speaker_id = ? AND id NOT IN (
-                        SELECT id FROM voiceprints WHERE speaker_id = ? ORDER BY created DESC LIMIT ?)""",
-                 (spk_id, spk_id, MAX_VOICEPRINTS))
-    conn.execute("UPDATE speakers SET sample_count = (SELECT COUNT(*) FROM voiceprints WHERE speaker_id = ?) "
-                 "WHERE id = ?", (spk_id, spk_id))
-
-
-def restore_line_prints(date: str, prints: list[dict]):
-    """Re-store the 'lines' voiceprints of a day (after re-transcribing wiped the day's prints)."""
-    conn = init_db()
-    try:
-        for who in {p["person"] for p in prints}:
-            _store_line_print(conn, date, who, [p for p in prints if p["person"] == who])
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def train_lines(date: str, person: str, lines: list[dict], remove: bool = False) -> dict:
-    """Teach (or, with remove=True, un-teach) `person`'s voice from specific lines of a day.
-    Taught lines are kept in the transcript's `line_prints`, so the day's 'lines' voiceprint can be rebuilt.
-    Lines under MIN_TRAIN_LINE_SECONDS or with someone talking over them are skipped."""
-    if person.startswith("Unknown"):
-        raise ValueError("Give the voice a name before teaching it")
-    path = transcript_path(date)
-    skipped, todo = [], []
-    if not remove:
-        with TRANSCRIPT_LOCK:
-            segs = json.loads(path.read_text(encoding="utf-8")).get("segments", [])
-        for l in lines:
-            seg = next((s for s in segs if _same_line(s, l)), None)
-            if not seg:
-                skipped.append({**l, "why": "line not found"})
-            elif seg["end"] - seg["start"] < MIN_TRAIN_LINE_SECONDS:
-                skipped.append({**l, "why": "too short"})
-            elif seg.get("overlap") or seg.get("overlap_labels"):
-                skipped.append({**l, "why": "someone talks over it"})
-            else:
-                todo.append(seg)
-        embs = line_voices.embed(date, [(s["start"], s["end"]) for s in todo])
-    with TRANSCRIPT_LOCK:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        prints = [p for p in data.get("line_prints", []) if not any(_same_line(p, l) for l in (lines if remove else todo))]
-        added = []
-        for s in [] if remove else todo:
-            e = embs.get((round(s["start"], 2), round(s["end"], 2)))
-            if e is None:
-                skipped.append({"start": s["start"], "text": s["text"], "why": "no audio"})
-                continue
-            p = {"start": s["start"], "text": s["text"], "person": person, "seconds": round(s["end"] - s["start"], 2),
-                 "embedding": [round(float(x), 5) for x in e]}
-            prints.append(p)
-            added.append(p)
-        touched = {person} | {p["person"] for p in data.get("line_prints", []) if p not in prints}
-        data["line_prints"] = prints
-        write_transcript(path, data)
-    conn = init_db()
-    try:
-        for who in touched:
-            _store_line_print(conn, date, who, [p for p in prints if p["person"] == who])
-        forget_unused_speakers(conn, keep={person})
-        conn.commit()
-    finally:
-        conn.close()
-    return {"trained": [{"start": p["start"], "text": p["text"]} for p in added], "skipped": skipped}
-
-
-def similar_lines(date: str, person: str) -> list[dict]:
-    """Lines of the day (not already `person`'s) whose voice matches `person`'s profile, best first."""
-    conn = init_db()
-    try:
-        mem = VoiceMemory(); mem.conn = conn
-        people = {name: prints for name, prints in mem.people().values()}
-    finally:
-        conn.close()
-    if person not in people:
-        return []
-    data = load_transcript(transcript_path(date))
-    cand = [s for s in data.get("segments", [])
-            if s.get("speaker") != person and not s.get("noise") and not s.get("overlap")
-            and s["end"] - s["start"] >= MIN_TRAIN_LINE_SECONDS]
-    embs = line_voices.embed(date, [(s["start"], s["end"]) for s in cand])
-    out = []
-    for s in cand:
-        e = embs.get((round(s["start"], 2), round(s["end"], 2)))
-        if e is None:
-            continue
-        mine = VoiceMemory.score(e, people[person])
-        theirs = VoiceMemory.score(e, people[s["speaker"]]) if s["speaker"] in people else 0.0
-        if mine >= LINE_MATCH_THRESHOLD and mine >= theirs + LINE_MATCH_MARGIN:
-            out.append({"start": s["start"], "end": s["end"], "text": s["text"], "speaker": s["speaker"],
-                        "score": round(mine, 3), "current_score": round(theirs, 3),
-                        "strong": mine >= LINE_STRONG_MATCH})
-    return sorted(out, key=lambda x: -x["score"])[:MAX_LINE_SUGGESTIONS]
-
-
-# Calibrated on a scratch copy of 2026-09-30: Lily, Mia and Steve merged into one fake voice and tagged by
-# their 3 longest lines each under new names (so saved profiles couldn't help). 0.35/0.05 suggested 451 of
-# 782 lines, 449 right; 6 tags each: 623, 618 right. 0.45/0.08 was as accurate but suggested half as many.
-# Those voices are clear; quiet ones score lower, which is why the user hears and confirms every suggestion.
-SPLIT_MIN_SECONDS = 1.5      # Shorter lines are left for the user to sort by ear
-SPLIT_MATCH = 0.35           # A line is suggested for a person at or above this...
-SPLIT_MARGIN = 0.05          # ...and this far ahead of the next person
-SPLIT_STRONG = 0.55          # Strong suggestions (accepted in bulk) need this score...
-SPLIT_STRONG_MARGIN = 0.15   # ...and this margin
-
-
-def split_voice(date: str, speaker: str, seeds: dict[str, list[dict]]) -> list[dict]:
-    """One diarization voice that is really several people: the user tags a few of its lines per person
-    (`seeds`), and every other line of that voice is scored against each person's tagged lines (mean of the
-    3 closest) and, if they have one, their saved voice profile (minus this day's print of `speaker`).
-    Returns a suggestion per line that scores clearly closer to one person."""
-    data = load_transcript(transcript_path(date))
-    segs = [s for s in data.get("segments", []) if s.get("speaker") == speaker and not s.get("noise")]
-    seed_segs = {p: [s for s in segs if any(_same_line(s, l) for l in ls)] for p, ls in seeds.items()}
-    seeded = [s for ss in seed_segs.values() for s in ss]
-    cand = [s for s in segs if s not in seeded and s["end"] - s["start"] >= SPLIT_MIN_SECONDS]
-    usable = lambda s: s["end"] - s["start"] >= 1.0
-    embs = line_voices.embed(date, [(s["start"], s["end"]) for s in cand + [s for s in seeded if usable(s)]])
-    key = lambda s: (round(s["start"], 2), round(s["end"], 2))
-    groups = {p: np.array([embs[key(s)] for s in ss if key(s) in embs]) for p, ss in seed_segs.items()}
-    conn = init_db()
-    try:
-        prof: dict[str, list] = {}
-        for name, blob, day, label in conn.execute(
-                "SELECT s.name, v.embedding, v.day, v.label FROM speakers s JOIN voiceprints v ON v.speaker_id = s.id"):
-            if name in seeds and not (day == date and name == speaker):
-                prof.setdefault(name, []).append(unit(np.frombuffer(blob, dtype=np.float32)))
-    finally:
-        conn.close()
-    out = []
-    for s in cand:
-        e = embs.get(key(s))
-        if e is None:
-            continue
-        scores = []
-        for p in seeds:
-            sc = [float(np.sort(groups[p] @ e)[::-1][:3].mean())] if len(groups.get(p, [])) else []
-            if prof.get(p):
-                sc.append(VoiceMemory.score(e, np.array(prof[p])))
-            if sc:
-                scores.append((max(sc), p))
-        scores.sort(reverse=True)
-        if not scores:
-            continue
-        best, who = scores[0]
-        margin = best - (scores[1][0] if len(scores) > 1 else 0.0)
-        if best >= SPLIT_MATCH and margin >= SPLIT_MARGIN:
-            out.append({"start": s["start"], "end": s["end"], "text": s["text"], "person": who, "score": round(best, 3),
-                        "margin": round(margin, 3), "strong": best >= SPLIT_STRONG and margin >= SPLIT_STRONG_MARGIN})
-    return out
-
-
 # --- MAIN INGEST PIPELINE ---
 def setup_problems() -> list[str]:
     problems = []
@@ -1900,13 +1426,6 @@ def resolve_overlap_names(data: dict) -> dict:
     return data
 
 
-def rename_in_overlaps(data: dict, old: str, new: str):
-    """Older transcripts only stored names in "overlap"; keep those in step with renames."""
-    for seg in data.get("segments", []) + data.get("trashed", []):
-        if seg.get("overlap") and old in seg["overlap"]:
-            seg["overlap"] = sorted({new if n == old else n for n in seg["overlap"]})
-
-
 def relabel_speaker(date: str, old: str, new: str, lines: list[dict] | None = None) -> list[dict]:
     """Say who a voice is on ONE day: every line (or just `lines`) by `old` becomes `new`.
     Other days and the voice database are untouched. Returns the lines changed (for undo)."""
@@ -2005,85 +1524,6 @@ def people_summary() -> list[dict]:
     return sorted(out, key=lambda p: (-len(p["days"]), -p["seconds"]))
 
 
-def voice_profiles() -> list[dict]:
-    """Every voice profile in the DB with its voiceprints, and for each print a few clean lines of that
-    voice on that day to listen to (so a print learned from the wrong voice is easy to spot)."""
-    conn = init_db()
-    try:
-        rows = conn.execute("SELECT s.name, s.kind, v.id, v.day, v.label, v.seconds, v.created FROM speakers s "
-                            "LEFT JOIN voiceprints v ON v.speaker_id = s.id ORDER BY s.name, v.created DESC").fetchall()
-    finally:
-        conn.close()
-    days: dict[str, dict] = {}
-
-    def day_data(date):
-        if date not in days:
-            p = transcript_path(date)
-            days[date] = load_transcript(p) if p.is_file() else {}
-            if days[date]:
-                wav = day_dir(date) / days[date].get("audio", "merged.wav")
-                days[date]["_audio"] = f"/audio/{date}/{wav.name}?v={int(wav.stat().st_mtime)}" if wav.exists() else None
-        return days[date]
-
-    out: dict[str, dict] = {}
-    for name, kind, pid, day, label, seconds, created in rows:
-        prof = out.setdefault(name, {"name": name, "tv": kind == "tv", "prints": []})
-        if pid is None:
-            continue
-        pr = {"id": pid, "day": day, "label": label, "seconds": round(seconds or 0, 1), "created": created, "samples": [], "audio": None}
-        data = day_data(day) if day and day != "legacy" else {}
-        if data:
-            # Lines of the voice the print came from: its diarization label's current name on that day
-            who = next((v["name"] for v in data.get("voices", []) if v.get("label") == label), name)
-            if label == "lines":
-                who = name
-            segs = [s for s in data.get("segments", []) if s.get("speaker") == who and not s.get("noise")
-                    and not s.get("overlap") and 1.5 <= s["end"] - s["start"] <= 15]
-            segs.sort(key=lambda s: -(s["end"] - s["start"]))
-            pr["samples"] = [{"start": s["start"], "end": s["end"], "text": s["text"]} for s in segs[:3]]
-            pr["audio"] = data.get("_audio")
-            pr["heard_as"] = who
-        prof["prints"].append(pr)
-    return sorted(out.values(), key=lambda p: (p["tv"], p["name"].lower()))
-
-
-def delete_voiceprint(pid: int) -> str | None:
-    conn = init_db()
-    try:
-        row = conn.execute("SELECT s.id, s.name FROM voiceprints v JOIN speakers s ON s.id = v.speaker_id WHERE v.id = ?",
-                           (pid,)).fetchone()
-        if not row:
-            return None
-        conn.execute("DELETE FROM voiceprints WHERE id = ?", (pid,))
-        conn.execute("UPDATE speakers SET sample_count = (SELECT COUNT(*) FROM voiceprints WHERE speaker_id = ?) WHERE id = ?",
-                     (row[0], row[0]))
-        conn.commit()
-        return row[1]
-    finally:
-        conn.close()
-
-
-def delete_profile(name: str) -> bool:
-    """Forget a voice profile and all its voiceprints. Transcripts keep the name on their lines."""
-    conn = init_db()
-    try:
-        n = conn.execute("DELETE FROM speakers WHERE name = ?", (name,)).rowcount
-        conn.commit()
-        return n > 0
-    finally:
-        conn.close()
-
-
-def set_profile_kind(name: str, tv: bool):
-    conn = init_db()
-    try:
-        conn.execute("INSERT OR IGNORE INTO speakers (name, sample_count) VALUES (?, 0)", (name,))
-        conn.execute("UPDATE speakers SET kind = ? WHERE name = ?", ("tv" if tv else None, name))
-        conn.commit()
-    finally:
-        conn.close()
-
-
 def has_edits(date: str) -> int:
     """How many lines of a day's transcript were edited by hand."""
     path = transcript_path(date)
@@ -2098,6 +1538,13 @@ def load_transcript(path: Path) -> dict:
     data = json.loads(path.read_text(encoding="utf-8"))
     _transcript_cache[str(path)] = (mtime, data)
     return data
+
+
+# Hand the voice_memory package the paths, helpers and lock it needs, so it never
+# has to import app.py back (which would be circular). Runs once the helpers above exist.
+configure(db_path=DB_PATH, day_dir=day_dir, transcript_path=transcript_path,
+          all_transcripts=all_transcripts, load_transcript=load_transcript,
+          write_transcript=write_transcript, lock=TRANSCRIPT_LOCK, log=log, hf_token=HF_TOKEN)
 
 
 _part_count_cache: dict[str, tuple[float, int]] = {}
@@ -2133,74 +1580,6 @@ def transcript_sources(data: dict) -> list[dict]:
     if all(isinstance(s, dict) for s in sources):
         return sources
     return describe_sources([INPUT_DIR / name for name in transcript_source_names(data)])
-
-
-# --- SPEAKER MANAGEMENT ---
-def list_speakers():
-    conn = init_db()
-    rows = conn.execute("SELECT id, name, sample_count FROM speakers ORDER BY id").fetchall()
-    if not rows:
-        log("No speakers enrolled yet.")
-        return
-    log(f"{'ID':>4}  {'Name':<24} Samples")
-    for spk_id, name, count in rows:
-        log(f"{spk_id:>4}  {name:<24} {count}")
-
-
-class RenameError(ValueError):
-    pass
-
-
-class NameTaken(RenameError):
-    """The new name belongs to someone else; pass merge=True to make them one person."""
-
-
-def rename_speaker_core(old: str, new: str, merge: bool = False) -> int:
-    """Rename a speaker in the voice DB and every transcript. If `new` is an existing person and
-    `merge` is set, the two become one: voiceprints are pooled and every line moves to `new`.
-    Returns the number of transcripts changed."""
-    new = new.strip()
-    if not new:
-        raise RenameError("The new name can't be empty.")
-    if new == old:
-        return 0
-    conn = init_db()
-    old_row = conn.execute("SELECT id FROM speakers WHERE name = ?", (old,)).fetchone()
-    new_row = conn.execute("SELECT id FROM speakers WHERE name = ?", (new,)).fetchone()
-    in_transcripts = {p: load_transcript(p) for _, p in all_transcripts()}
-    target_in_use = new_row or any(s.get("speaker") == new for d in in_transcripts.values() for s in d.get("segments", []))
-    if target_in_use and not merge:
-        raise NameTaken(f"'{new}' is already someone else. Merge '{old}' into '{new}'?")
-
-    if old_row and new_row:
-        conn.execute("UPDATE voiceprints SET speaker_id = ? WHERE speaker_id = ?", (new_row[0], old_row[0]))
-        conn.execute("DELETE FROM speakers WHERE id = ?", (old_row[0],))
-        conn.execute("UPDATE speakers SET sample_count = (SELECT COUNT(*) FROM voiceprints WHERE speaker_id = ?) "
-                     "WHERE id = ?", (new_row[0], new_row[0]))
-    elif old_row:
-        conn.execute("UPDATE speakers SET name = ? WHERE id = ?", (new, old_row[0]))
-
-    # Update existing transcripts too, so old days show the new name (trashed lines included)
-    pending = [p for p, d in in_transcripts.items()
-               if any(s.get("speaker") == old or old in (s.get("overlap") or [])
-                      for s in d.get("segments", []) + d.get("trashed", []))
-               or any(v.get("name") == old for v in d.get("voices", []))]
-    if not old_row and not pending:
-        conn.rollback()
-        raise RenameError(f"No speaker named '{old}'. Run with --speakers to see the list.")
-    conn.commit()
-    with TRANSCRIPT_LOCK:
-        for path in pending:
-            data = json.loads(path.read_text(encoding="utf-8"))   # fresh copy, not the cache
-            for seg in data.get("segments", []) + data.get("trashed", []):
-                if seg.get("speaker") == old:
-                    seg["speaker"] = new
-            rename_in_overlaps(data, old, new)
-            for v in data.get("voices", []):
-                if v.get("name") == old:
-                    v["name"] = new
-            write_transcript(path, data)
-    return len(pending)
 
 
 def rename_speaker(old: str, new: str, merge: bool = False):
