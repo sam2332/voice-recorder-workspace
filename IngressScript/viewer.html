@@ -579,6 +579,34 @@
   .toast.has-action { pointer-events: auto; display: flex; align-items: center; gap: 14px; }
   .toast button { border: 0; background: transparent; color: var(--accent); font-weight: 700; padding: 2px 4px; }
 
+  /* ---------- Segments and meetings ---------- */
+  .divider .btn { text-transform: none; font-weight: 500; letter-spacing: 0; }
+  .divider.part-divider { color: var(--accent); }
+  .meeting-tag { font-size: 11px; font-weight: 600; font-style: normal; color: var(--accent); margin-left: 8px; padding: 0 6px;
+    border-radius: 999px; background: var(--accent-soft); white-space: nowrap; }
+  .line-btn.mt:hover, .line-btn.mt.on { background: var(--accent-soft); color: var(--accent); opacity: 1; }
+  .part { border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; background: var(--bg); display: grid; gap: 8px; }
+  .part + .part { margin-top: 8px; }
+  .part-head { display: flex; justify-content: space-between; gap: 8px; font-weight: 600; font-size: 14px; }
+  .part-meta { font-size: 12px; color: var(--muted); }
+  .part-level { display: flex; align-items: center; gap: 8px; }
+  .part-level .ctl { flex: 1; min-width: 0; }
+  .part-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+  .mt-pick { display: grid; gap: 6px; max-height: 40vh; overflow-y: auto; margin-bottom: 12px; }
+  .mt-pick .item { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg); }
+  .mt-pick .item .nm { flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mt-new { display: flex; gap: 8px; }
+  .mt-new input { flex: 1; }
+  .mt-card { display: grid; gap: 8px; }
+  .mt-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .mt-top h3 { margin: 0; flex: 1; min-width: 0; font-size: 17px; cursor: pointer; }
+  .mt-stats { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 13px; color: var(--muted); }
+  .mt-overview { font-size: 14px; line-height: 1.5; }
+  .mt-line { display: grid; grid-template-columns: 112px 1fr auto; gap: 10px; align-items: baseline; padding: 6px 0; border-top: 1px solid var(--border); font-size: 14px; }
+  .mt-line .who { font-weight: 600; font-size: 12.5px; }
+  .mt-day { margin: 14px 0 4px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+  @media (max-width: 640px) { .mt-line { grid-template-columns: 1fr auto; } .mt-line .prec { grid-column: 1; justify-self: start; } }
+
   /* ---------- Responsive ---------- */
   #library-toggle, #details-toggle { display: none; }
   .drawer { transition: transform .22s ease; }
@@ -695,6 +723,10 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
         Overview
       </button>
+      <button class="lib-home server-only" id="lib-meetings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4M8 15h5"/></svg>
+        Meetings
+      </button>
       <div class="lib-actions server-only hidden" id="lib-actions">
         <button class="btn small" id="process-all"></button>
       </div>
@@ -758,6 +790,11 @@
       <section id="rec-section">
         <h2>Recordings</h2>
         <div id="recordings"></div>
+      </section>
+      <section class="server-only hidden" id="parts-section">
+        <h2>Segments</h2>
+        <div id="parts"></div>
+        <div class="note">A new segment starts after 5 minutes without speech. Add one to a meeting to track it.</div>
       </section>
       <section id="spk-section">
         <h2>Speakers</h2>
@@ -851,6 +888,18 @@
       <button class="btn" value="cancel" id="split-cancel">Cancel</button>
       <button class="btn primary" type="button" id="split-save">Save</button>
     </div>
+  </form>
+</dialog>
+
+<dialog id="meeting-dlg">
+  <form method="dialog">
+    <h3 id="meeting-title">Add to a meeting</h3>
+    <div class="mt-pick" id="meeting-list"></div>
+    <div class="mt-new">
+      <input type="text" id="meeting-new" placeholder="New meeting name" maxlength="120">
+      <button class="btn primary" type="button" id="meeting-create">Create and add</button>
+    </div>
+    <div class="row"><button class="btn" value="close">Close</button></div>
   </form>
 </dialog>
 
@@ -1026,7 +1075,8 @@
       card.append(row);
 
       const bits = [fmtDur(d.duration)];
-      if (d.recordings) bits.push(plural(d.recordings, 'recording'));
+      if (d.parts) bits.push(plural(d.parts, 'segment'));
+      else if (d.recordings) bits.push(plural(d.recordings, 'recording'));
       if (d.first_time) bits.push(d.first_time === d.last_time ? clock(d.first_time) : `${clock(d.first_time)}–${clock(d.last_time)}`);
       card.append(el('div', 'meta', job?.status === 'processing' ? job.label + '…' : bits.join(' · ')));
 
@@ -1081,6 +1131,7 @@
     $('lib-home').classList.toggle('active', state.view === 'home');
     $('lib-people').classList.toggle('active', state.view === 'people');
     $('lib-overview').classList.toggle('active', state.view === 'overview');
+    $('lib-meetings').classList.toggle('active', state.view === 'meetings');
     $('home-inner').classList.toggle('ov-wide', state.view === 'overview');
     const i = state.library.findIndex(d => d.date === state.date);
     // Library is newest first, so "previous" (older) is further down the list
@@ -1097,6 +1148,7 @@
     if (seekTo !== undefined) state.pendingSeek = seekTo;   // jump to this moment once the day is open
     if (date === 'people') { if (location.hash !== '#people') location.hash = 'people'; else showPeople(); return; }
     if (date === 'overview') { if (location.hash !== '#overview') location.hash = 'overview'; else showOverview(); return; }
+    if (date === 'meetings') { if (location.hash !== '#meetings') location.hash = 'meetings'; else showMeetings(); return; }
     if (location.hash.slice(1) !== date) location.hash = date;  // hashchange opens it
     else openDay(date);
   }
@@ -1276,6 +1328,11 @@
     t_asum.append(el('div', null, 'Summarize recordings automatically'), el('div', 'hint', 'Off: summaries wait for you. On: they start as soon as the transcript is ready.'));
     l_asum.append(t_asum, asum);
 
+    const lvl = el('input', 'switch'); lvl.type = 'checkbox'; lvl.checked = s.relevel_segments !== false;
+    const l_lvl = el('label', 'row-l'); const t_lvl = el('div');
+    t_lvl.append(el('div', null, 'Even out the loudness of each segment'), el('div', 'hint', 'After transcribing, a quiet meeting and a loud one in the same day are brought to the same level. You can adjust each segment afterwards.'));
+    l_lvl.append(t_lvl, lvl);
+
     const lang = el('select'); LANGS.forEach(([v, n]) => { const o = el('option', null, n); o.value = v; lang.append(o); }); lang.value = s.language || '';
     const l2 = el('label', 'row-l'); const t2 = el('div');
     t2.append(el('div', null, 'Language'), el('div', 'hint', 'Choosing it avoids mistakes when a day starts with noise.'));
@@ -1285,9 +1342,9 @@
     const l3 = el('label', 'row-l'); const t3 = el('div');
     t3.append(el('div', null, 'Clothing-rustle cleanup'), el('div', 'hint', 'Turns down the scratchy sound of the mic rubbing on clothes. Voices are left alone.'));
     l3.append(t3, rustle);
-    form.append(l1, la, l_asum, l2, l3);
+    form.append(l1, la, l_asum, l_lvl, l2, l3);
     const actions = el('div', 'actions');
-    actions.append(btn(saveLabel, 'primary', () => onSave({ auto_transcribe: auto.checked, auto_sync: async.checked, auto_summarize: asum.checked, language: lang.value, rustle_strength: +rustle.value })));
+    actions.append(btn(saveLabel, 'primary', () => onSave({ auto_transcribe: auto.checked, auto_sync: async.checked, auto_summarize: asum.checked, relevel_segments: lvl.checked, language: lang.value, rustle_strength: +rustle.value })));
     form.append(actions);
     return form;
   }
@@ -1878,6 +1935,7 @@
     const want = decodeURIComponent(location.hash.slice(1));
     if (want === 'people' && state.server) showPeople();
     else if (want === 'overview' && state.server) showOverview();
+    else if (want === 'meetings' && state.server) showMeetings();
     else if (want && libItem(want)) openDay(want);
     else if (state.server) { history.replaceState(null, '', location.pathname); showHome(); }
     else openDay(state.library[0].date);   // file mode has no home page
@@ -1959,6 +2017,12 @@
     }
     renderRecordings();
     renderStats();
+    renderParts();
+    if (ready && state.server) loadMeetings().then(() => {
+      if (state.date !== date || state.view !== 'day') return;
+      if (!state.editing) renderTranscript();
+      renderParts();
+    });
     renderTimeline(); updateProgress(); updateNow();
     if (ready) { if (state.summary?.date !== date) $('summary-wrap').replaceChildren(); loadSummary(date); }
     if (ready && state.server && !keep && data.voices_reviewed === false && !state.reviewSeen.has(date)) openVoiceReview();
@@ -2660,12 +2724,26 @@
     const frag = document.createDocumentFragment();
     const timed = sourcesTimed() && state.sources.length > 1;
     state.matches = [];
-    let turn = null, lastSpk = null, lastEnd = -1, lastSrc = -1, shown = 0;
+    let turn = null, lastSpk = null, lastEnd = -1, lastSrc = -1, shown = 0, lastPart = -1;
 
     const noiseCount = state.segments.filter(s => s.noise).length;
+    const parts = state.data?.parts || [];
     for (const s of state.segments) {
       if (state.hidden.has(s.speaker) || (rx && !s.text.match(rx)) || (s.noise && !state.showNoise)) { lastSpk = null; continue; }
       shown++;
+      // Mark where each segment (a stretch of speech between long silences) begins
+      const pi = partIndexAt(s.start);
+      if (state.server && parts.length > 1 && pi >= 0 && pi !== lastPart) {
+        const p = parts[pi];
+        const d = el('div', 'divider part-divider', `Segment ${pi + 1} of ${parts.length} · ${clockAt(p.start) || fmt(p.start)}–${clockAt(p.end) || fmt(p.end)} · ${plural(p.lines, 'line')}`);
+        const add = el('button', 'btn small', 'Add to meeting…'); add.type = 'button';
+        add.title = 'Mark every line of this segment as part of a meeting';
+        add.onclick = () => openMeetingPicker(segmentLines(p), `Segment ${pi + 1}`);
+        d.append(add);
+        frag.append(d);
+        lastSpk = null;
+      }
+      if (pi >= 0) lastPart = pi;
       // Mark where each separate recording begins
       const src = srcIndexAt(s.start);
       if (timed && src !== lastSrc && src >= 0) {
@@ -2712,6 +2790,8 @@
       row.append(cue);
       if (s.noise) cue.append(el('span', 'noise-tag', 'likely noise'));
       if (s.edited) cue.append(el('span', 'edited-tag', 'edited'));
+      const marked = marksOf(state.date, s.start);
+      if (marked.length) cue.append(el('span', 'meeting-tag', marked.map(m => m.name).join(', ')));
       if (s.overlap?.length) {
         const ov = el('span', 'overlap-tag', `talking over: ${s.overlap.map(displayName).join(', ')}`);
         ov.title = `${s.overlap.map(displayName).join(' and ')} ${s.overlap.length > 1 ? 'were' : 'was'} also talking during this line, so some words may be missing or belong to them`;
@@ -2726,7 +2806,12 @@
         cut.title = 'Save this line as an MP3 clip'; cut.setAttribute('aria-label', 'Save this line as an MP3 clip');
         cut.append(svg('<circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4 8.1 15.9M14.5 14.5 20 20M8.1 8.1 12 12"/>'));
         cut.onclick = () => saveClip(s, cut);
-        row.append(cut, pen);
+        const mt = el('button', 'line-btn mt' + (marked.length ? ' on' : ''));
+        mt.title = marked.length ? `In meeting: ${marked.map(m => m.name).join(', ')}. Click to change` : 'Add this line to a meeting';
+        mt.setAttribute('aria-label', 'Add this line to a meeting');
+        mt.append(svg('<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M18 8v6M15 11h6"/>'));
+        mt.onclick = () => openMeetingPicker([s], 'This line');
+        row.append(mt, cut, pen);
         if (s.noise) {
           const keep = el('button', 'line-btn keep');
           keep.title = 'Not noise: keep this line'; keep.setAttribute('aria-label', 'Keep this line');
@@ -2754,6 +2839,245 @@
     $('search-count').textContent = q ? `${state.matches.length} match${state.matches.length === 1 ? '' : 'es'}` : '';
     state.activeIdx = -1;
     syncActive(true);
+  }
+
+  // ---------- Segments: stretches of speech between long silences ----------
+  const partIndexAt = t => (state.data?.parts || []).findIndex(p => t >= p.start - 0.01 && t <= p.end + 0.01);
+  const segmentLines = p => state.segments.filter(s => !s.noise && s.start >= p.start - 0.01 && s.start <= p.end + 0.01);
+  const jsonPost = (url, body) => api(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+
+  function renderParts() {
+    const parts = state.data?.parts || [];
+    $('parts-section').classList.toggle('hidden', !(state.server && isReady() && parts.length));
+    $('parts').replaceChildren(...parts.map((p, i) => {
+      const row = el('div', 'part');
+      const head = el('div', 'part-head');
+      head.append(el('span', null, `Segment ${i + 1}`), el('span', 'part-meta', `${clockAt(p.start) || fmt(p.start)}\u2013${clockAt(p.end) || fmt(p.end)}`));
+      const lv = p.level;
+      row.append(head, el('div', 'part-meta', [plural(p.lines, 'line'), p.speakers.slice(0, 3).map(displayName).join(', '),
+        lv && lv.gain_db ? `levelled ${lv.gain_db > 0 ? '+' : ''}${lv.gain_db} dB` : ''].filter(Boolean).join(' \u00b7 ')));
+
+      const act = el('div', 'part-actions');
+      const jump = el('button', 'btn small', 'Play'); jump.type = 'button'; jump.onclick = () => { seek(p.start, true); closeDrawers(); };
+      const mt = el('button', 'btn small', 'Add to meeting\u2026'); mt.type = 'button';
+      mt.onclick = () => openMeetingPicker(segmentLines(p), `Segment ${i + 1}`);
+      act.append(jump, mt);
+      row.append(act);
+      return row;
+    }));
+  }
+
+  // ---------- Meetings: lines or whole segments marked as part of a meeting ----------
+  async function loadMeetings() {
+    if (!state.server) return;
+    try { state.meetings = (await api('/api/meetings')).meetings; } catch { /* keep the old list */ }
+  }
+  const marksOf = (date, start) => (state.meetings || []).filter(m => m.marks.some(([d, s]) => d === date && Math.abs(s - start) < 0.05));
+  const hasMark = (m, it) => m.marks.some(([d, s]) => d === it.date && Math.abs(s - it.start) < 0.05);
+
+  function openMeetingPicker(segs, what) {
+    if (!segs.length) { toast('There are no lines to add'); return; }
+    const items = segs.map(s => ({ date: state.date, start: s.start, text: s.text }));
+    const dlg = $('meeting-dlg'), list = $('meeting-list'), name = $('meeting-new');
+    $('meeting-title').textContent = `${what} \u00b7 ${plural(items.length, 'line')}`;
+    name.value = '';
+    const refresh = async () => {
+      await loadMeetings(); draw();
+      if (state.view === 'day' && !state.editing) renderTranscript();
+    };
+    const draw = () => {
+      const ms = state.meetings || [];
+      list.replaceChildren(...(ms.length ? ms.map(m => {
+        const all = items.every(it => hasMark(m, it));
+        const row = el('div', 'item');
+        row.append(el('span', 'nm', m.name), el('span', 'muted', plural(m.lines, 'line')));
+        const b = el('button', 'btn small' + (all ? '' : ' primary'), all ? 'Remove' : 'Add'); b.type = 'button';
+        b.onclick = async () => {
+          try { await jsonPost(`/api/meetings/${m.id}/items`, all ? { remove: items } : { add: items }); }
+          catch (e) { toast(e.message); return; }
+          toast(all ? `Removed from ${m.name}` : `Added to ${m.name}`);
+          refresh();
+        };
+        row.append(b);
+        return row;
+      }) : [el('div', 'note', 'No meetings yet. Create the first one below.')]));
+    };
+    const create = async () => {
+      const n = name.value.trim();
+      if (!n) { name.focus(); return; }
+      try { await jsonPost('/api/meetings', { name: n, items }); } catch (e) { toast(e.message); return; }
+      toast(`Created \u201c${n}\u201d`);
+      name.value = '';
+      refresh();
+    };
+    $('meeting-create').onclick = create;
+    name.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); create(); } };
+    draw();
+    dlg.showModal();
+    loadMeetings().then(draw);
+  }
+
+  const mt = { open: null, timer: null, detail: null };
+
+  async function showMeetings(open = null) {
+    if (state.view === 'day') savePosition();
+    state.view = 'meetings';
+    state.date = null;
+    renderTeachTray();
+    state.openToken++;
+    audio.pause();
+    mt.open = open;
+    $('app').classList.add('is-home');
+    $('title').textContent = 'Meetings';
+    document.title = 'Meetings \u00b7 Recorder Playback';
+    $('subtitle').textContent = '';
+    closeDrawers(); renderLibrary(); updateNav();
+    $('home').scrollTop = 0;
+    $('home-inner').replaceChildren(el('div', 'note', 'Loading meetings\u2026'));
+    await loadMeetingsPage();
+  }
+
+  async function loadMeetingsPage() {
+    clearTimeout(mt.timer);
+    const open = mt.open;
+    try {
+      if (open) mt.detail = await api(`/api/meetings/${open}`);
+      else await loadMeetings();
+    } catch (e) {
+      if (state.view !== 'meetings') return;
+      if (e.status === 404) { mt.open = null; return loadMeetingsPage(); }
+      $('home-inner').replaceChildren(el('div', 'error-box', `Couldn\u2019t load meetings: ${e.message}`)); return;
+    }
+    if (state.view !== 'meetings' || mt.open !== open) return;
+    renderMeetings();
+    if (open && ['queued', 'running'].includes(mt.detail.summary_state.status)) mt.timer = setTimeout(loadMeetingsPage, 2500);
+  }
+
+  function meetingStats(m) {
+    const bits = [plural(m.lines, 'line')];
+    if (m.span) bits.push(fmtDur(m.span));
+    if (m.days.length) bits.push(m.days.length === 1 ? shortDate(m.days[0]) : `${shortDate(m.days[0])} \u2013 ${shortDate(m.days[m.days.length - 1])}`);
+    if (m.missing) bits.push(`${m.missing} marked ${m.missing === 1 ? 'line is' : 'lines are'} gone`);
+    const s = el('div', 'mt-stats');
+    s.append(...bits.map(b => el('span', null, b)));
+    return s;
+  }
+
+  function renderMeetings() {
+    const inner = $('home-inner');
+    if (mt.open) { renderMeetingDetail(inner); return; }
+    const ms = state.meetings || [];
+    $('subtitle').textContent = plural(ms.length, 'meeting');
+    const frag = document.createDocumentFragment();
+    const head = el('div');
+    head.append(el('h2', 'hello', 'Meetings'),
+      el('p', 'lead', 'Mark lines or whole segments of a day as part of a meeting (use the add-person button on a line, or \u201cAdd to meeting\u201d on a segment). Open a meeting for its summary and status.'));
+    frag.append(head);
+    if (!ms.length) {
+      const c = card('cal', 'No meetings yet');
+      c.append(el('p', null, 'Open a day, then use \u201cAdd to meeting\u2026\u201d on a segment or the add-person button beside a line.'));
+      frag.append(c);
+    }
+    for (const m of ms) {
+      const c = el('section', 'card mt-card');
+      const top = el('div', 'mt-top');
+      const h = el('h3', null, m.name); h.onclick = () => showMeetings(m.id);
+      top.append(h);
+      top.append(el('span', 'chip ' + (m.summary ? (m.summary.outdated ? 'pending' : 'new') : ''), m.summary ? (m.summary.outdated ? 'Summary outdated' : 'Summary ready') : 'No summary'));
+      top.append(btn('Open', 'small', () => showMeetings(m.id)));
+      c.append(top, meetingStats(m));
+      if (m.people.length) {
+        const who = el('div');
+        m.people.slice(0, 6).forEach(p => who.append(el('span', 'ov-person', `${displayName(p.name)} \u00b7 ${fmtDur(p.seconds)}`)));
+        c.append(who);
+      }
+      if (m.summary?.overview) c.append(el('div', 'mt-overview', m.summary.overview));
+      frag.append(c);
+    }
+    inner.replaceChildren(frag);
+  }
+
+  function renderMeetingDetail(inner) {
+    const m = mt.detail;
+    $('subtitle').textContent = m.name;
+    const frag = document.createDocumentFragment();
+    const back = btn('\u2190 All meetings', 'small', () => showMeetings());
+    const top = el('div', 'mt-top'); top.style.marginTop = '12px';
+    top.append(el('h2', 'hello', m.name));
+    top.lastChild.style.flex = '1';
+    top.append(btn('Rename', 'small', async () => {
+      const n = prompt('Meeting name', m.name);
+      if (!n || !n.trim() || n.trim() === m.name) return;
+      try { await jsonPost(`/api/meetings/${m.id}/rename`, { name: n.trim() }); } catch (e) { toast(e.message); return; }
+      loadMeetingsPage();
+    }), btn('Delete', 'small danger', async () => {
+      if (!confirm(`Delete \u201c${m.name}\u201d? The transcripts are not touched.`)) return;
+      try { await api(`/api/meetings/${m.id}`, { method: 'DELETE' }); } catch (e) { toast(e.message); return; }
+      toast('Meeting deleted'); showMeetings();
+    }));
+    frag.append(back, top, meetingStats(m));
+    if (m.people.length) {
+      const who = el('div');
+      m.people.forEach(p => who.append(el('span', 'ov-person', `${displayName(p.name)} \u00b7 ${fmtDur(p.seconds)}`)));
+      frag.append(who);
+    }
+
+    // Status summary
+    const r = m.summary_state;
+    const box = el('section', 'summary');
+    const sh = el('div', 'summary-head');
+    const h3 = el('h3'); h3.append(svg('<path d="M4 6h16M4 12h10M4 18h13"/>'), 'Status');
+    sh.append(h3, el('span', 'meta', r.status === 'ready' ? `${r.model}` : ''));
+    const busy = ['queued', 'running'].includes(r.status);
+    const run = () => jsonPost(`/api/meetings/${m.id}/summary`, {}).then(loadMeetingsPage).catch(e => toast(e.message));
+    if (r.status === 'ready' && !busy) {
+      const copy = btn('Copy', 'small', () => navigator.clipboard.writeText(r.markdown.replace(/\s*\[L[\d\sL,\u2013-]*\]/g, '')).then(() => toast('Summary copied')));
+      sh.append(copy, btn('Regenerate', 'small', run));
+    }
+    box.append(sh);
+    const body = el('div', 'summary-body');
+    if (busy) {
+      body.append(progressBar(r.progress || 0, (r.label || 'Waiting') + '\u2026', r.progress ? `${Math.round(r.progress * 100)}%` : ''),
+        el('p', 'note', 'Runs on this computer with Ollama.'));
+    } else if (r.status === 'failed') {
+      const a = el('div', 'actions'); a.append(btn('Try again', 'primary small', run));
+      body.append(el('div', 'error-box', r.error || 'Something went wrong'), a);
+    } else if (r.status === 'ready') {
+      if (r.outdated) {
+        const st = el('div', 'stale');
+        st.append(el('span', null, 'Lines were added or changed since this summary was written.'), btn('Regenerate', 'small', run));
+        body.append(st);
+      }
+      body.append(renderMarkdown(r.markdown, r.refs || {}, { doneKey: 'meetingDone:' + m.id }));
+    } else if (!m.lines) {
+      body.append(el('p', 'lead', 'This meeting has no lines yet.'));
+    } else {
+      body.append(el('p', 'lead', `Where things stand, decisions, action items and open questions, written by ${r.model} on this computer.`));
+      const a = el('div', 'actions'); a.append(btn('Summarize this meeting', 'primary', run));
+      body.append(a);
+    }
+    box.append(body);
+    frag.append(box);
+
+    // The marked lines, by day
+    let day = null;
+    for (const l of m.transcript) {
+      if (l.date !== day) {
+        day = l.date;
+        frag.append(el('div', 'mt-day', longDate(day)));
+      }
+      const row = el('div', 'mt-line');
+      const when = el('button', 'prec', l.at); when.title = 'Open this moment'; when.onclick = () => go(l.date, l.start);
+      const text = el('div'); text.append(el('span', 'who', displayName(l.speaker) + ': '), l.text);
+      const rm = el('button', 'btn small', 'Remove'); rm.title = 'Take this line out of the meeting';
+      rm.onclick = async () => {
+        try { await jsonPost(`/api/meetings/${m.id}/items`, { remove: [{ date: l.date, start: l.start, text: l.text }] }); } catch (e) { toast(e.message); return; }
+        loadMeetingsPage();
+      };
+      row.append(when, text, rm);
+      frag.append(row);
+    }
+    inner.replaceChildren(frag);
   }
 
   // ---------- Day summary (local Ollama) ----------
@@ -2833,9 +3157,9 @@
       .map(r => refs[r] !== undefined ? (clockAt(refs[r]) || fmt(refs[r])) : r).join('–')).join(', ') + ')');
 
   // Small, safe Markdown renderer (headings, nested lists, task boxes, bold/italic/code) built as DOM nodes
-  function renderMarkdown(md, refs) {
+  function renderMarkdown(md, refs, opts = {}) {
     const root = el('div', 'md');
-    const doneKey = 'summaryDone:' + state.date;
+    const doneKey = opts.doneKey || 'summaryDone:' + state.date;
     const done = new Set(store.get(doneKey, []));
     const inline = (text, into) => {
       const rx = /(\*\*[^*]+\*\*|\*[^*\s][^*]*\*|_[^_\s][^_]*_|`[^`]+`|\[L\d+(?:\s*[-–,]\s*L?\d+)*\])/g;
@@ -2851,9 +3175,11 @@
             const [r, last] = part.split(/\s*[-–]\s*/).map(x => 'L' + x.replace(/^L/, ''));
             const at = refs[r];
             if (at === undefined) continue;   // a tag the model made up: drop it
-            const b = el('button', 'ref', clockAt(at) || fmt(at));
-            b.title = last && refs[last] !== undefined ? `Play from here (${clockAt(at)}–${clockAt(refs[last])})` : 'Play from here';
-            b.onclick = () => { state.userScrolledAt = 0; seek(at, true); };
+            // Meeting summaries cite lines from several days: {date, start, at}
+            const far = typeof at === 'object';
+            const b = el('button', 'ref', far ? `${shortDate(at.date)} ${at.at}` : clockAt(at) || fmt(at));
+            b.title = far ? 'Open this moment' : last && refs[last] !== undefined ? `Play from here (${clockAt(at)}–${clockAt(refs[last])})` : 'Play from here';
+            b.onclick = far ? () => go(at.date, at.start) : () => { state.userScrolledAt = 0; seek(at, true); };
             into.append(b);
           }
         } else into.append(el('em', null, t.slice(1, -1)));
@@ -3580,6 +3906,7 @@
   $('lib-home').onclick = () => go('');
   $('lib-people').onclick = () => { go('people'); closeDrawers(); };
   $('lib-overview').onclick = () => { go('overview'); closeDrawers(); };
+  $('lib-meetings').onclick = () => { go('meetings'); closeDrawers(); };
   $('brand').onclick = () => state.server && go('');
   $('brand').onkeydown = e => { if (e.key === 'Enter') $('brand').onclick(); };
   $('process-all').onclick = () => transcribe(state.library.filter(d => d.status === 'pending' && !d.job).map(d => d.date).reverse());
@@ -3846,6 +4173,7 @@
     if (!d) { if (state.server && state.view !== 'home') showHome(); }
     else if (d === 'people') { if (state.view !== 'people') showPeople(); }
     else if (d === 'overview') { if (state.view !== 'overview') showOverview(); }
+    else if (d === 'meetings') { if (state.view !== 'meetings') showMeetings(); }
     else if (d !== state.date && libItem(d)) openDay(d);
   });
   document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshLibrary(); });

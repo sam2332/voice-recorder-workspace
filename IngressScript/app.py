@@ -17,6 +17,7 @@ import re
 import sys
 import json
 import time
+import uuid
 import shutil
 import sqlite3
 import argparse
@@ -76,6 +77,10 @@ NOISE_IF_RUSTLE = {"okay", "ok", "oh", "ah", "bye", "yeah", "damn"}
 HALLUCINATIONS = ("teksting av", "tekstet av", "untertitel", "subtitles by", "sous-titres", "amara.org",
                   "thanks for watching", "thank you for watching", "please subscribe", "like and subscribe",
                   "transcribed by", "transcription by", "copyright", "www.", ".com")
+# A day splits into segments wherever real speech stops for this long (a fan keeps the recorder running)
+SEGMENT_GAP_SECONDS = 300
+SEGMENT_TARGET_DB = -18.0          # each segment's loud speech is brought to about this level (dBFS)
+SEGMENT_MAX_BOOST_DB, SEGMENT_MAX_CUT_DB = 18.0, 12.0
 GATED_MODELS = ["pyannote/speaker-diarization-community-1"]
 
 # V2026-08-20-06-18-54.MP3 / .WAV -> date 2026-08-20, recorded at 06:18:54
@@ -100,6 +105,7 @@ DEFAULT_SETTINGS = {
     "auto_transcribe": False,     # transcribe new / incomplete days in the background
     "auto_sync": False,           # start syncing on startup if the recorder is connected
     "auto_summarize": False,      # summarize new days and update overview automatically
+    "relevel_segments": True,     # even out the loudness of each segment of a day after transcribing
     "language": LANGUAGE or "en",   # "" = detect
     "rustle_strength": RUSTLE_STRENGTH,
 }
@@ -116,7 +122,7 @@ def load_settings() -> dict:
 
 
 def save_settings(patch: dict) -> dict:
-    allowed = {"setup_done": bool, "auto_transcribe": bool, "auto_sync": bool, "auto_summarize": bool, "language": str, "rustle_strength": float}
+    allowed = {"setup_done": bool, "auto_transcribe": bool, "auto_sync": bool, "auto_summarize": bool, "relevel_segments": bool, "language": str, "rustle_strength": float}
     with _settings_lock:
         data = load_settings()
         for key, kind in allowed.items():
@@ -761,6 +767,117 @@ def preview_wav(path: Path, start: float, lv: dict, seconds: float = 10.0) -> by
     buf = io.BytesIO()
     wavfile.write(buf, SAMPLE_RATE, (np.clip(y, -1, 1) * 32767).astype(np.int16))
     return buf.getvalue()
+
+
+# --- SEGMENTS: a day split wherever real speech stops for a long time ---
+def day_parts(data: dict, gap: float = SEGMENT_GAP_SECONDS) -> list[dict]:
+    """Stretches of real speech separated by at least `gap` seconds without any. Noise lines don't count,
+    so a fan or rustle that keeps the recorder running doesn't hold two meetings together."""
+    parts, talk = [], []
+    for s in sorted((s for s in data.get("segments", []) if not s.get("noise")), key=lambda s: s["start"]):
+        who = s.get("speaker", "Unknown")
+        if parts and s["start"] - parts[-1]["end"] < gap:
+            p = parts[-1]
+            p["end"] = max(p["end"], s["end"])
+            p["lines"] += 1
+        else:
+            parts.append({"start": s["start"], "end": s["end"], "lines": 1})
+            talk.append({})
+        talk[-1][who] = talk[-1].get(who, 0.0) + s["end"] - s["start"]
+    for p, t in zip(parts, talk):
+        p["speakers"] = sorted(t, key=t.get, reverse=True)
+    return parts
+
+
+def leveling_path(date: str) -> Path:
+    return day_dir(date) / "leveling.json"
+
+
+def load_leveling(date: str) -> list[dict]:
+    try:
+        return json.loads(leveling_path(date).read_text(encoding="utf-8")).get("parts", [])
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+def speech_level_db(x: np.ndarray, spans: list[tuple[int, int]]) -> float | None:
+    """Loud-speech level (95th percentile of 50 ms RMS) over the given sample spans of int16 audio."""
+    frame = SAMPLE_RATE // 20
+    chunks = [x[a:b].astype(np.float32) / 32768 for a, b in spans if b - a >= frame]
+    if not chunks:
+        return None
+    y = np.concatenate(chunks)
+    n = len(y) // frame
+    if n < 20:   # under a second of speech: too little to judge
+        return None
+    rms = np.sqrt((y[:n * frame].reshape(-1, frame) ** 2).mean(1))
+    return float(np.percentile(20 * np.log10(np.maximum(rms, 1e-9)), 95))
+
+
+def relevel_parts(date: str, targets: dict[float, float] | None = None) -> list[dict]:
+    """Bring each segment's speech to its target level in <date>/merged.wav, with ~1 s crossfades at the
+    boundaries (which sit in the long silences). Measures the audio as it is now, so running it again
+    changes little. `targets` maps a segment's start (seconds) to a manual target dBFS; other segments
+    keep the target saved last time, else SEGMENT_TARGET_DB. Returns the per-segment record."""
+    from scipy.io import wavfile
+    import wave
+    path = transcript_path(date)
+    wav = day_dir(date) / "merged.wav"
+    if not path.is_file() or not wav.is_file():
+        return []
+    data = load_transcript(path)
+    parts = day_parts(data)
+    if not parts:
+        return []
+    old = load_leveling(date)
+
+    def target_for(p):
+        for start, t in (targets or {}).items():
+            if abs(start - p["start"]) < 5:
+                return float(t)
+        prev = next((o for o in old if abs(o["start"] - p["start"]) < 5), None)
+        return prev["target_db"] if prev else SEGMENT_TARGET_DB
+
+    sr, x = wavfile.read(wav, mmap=True)
+    lines = [s for s in data["segments"] if not s.get("noise")]
+    record, gains = [], []
+    for p in parts:
+        spans = [(int(s["start"] * sr), int(s["end"] * sr)) for s in lines if p["start"] <= s["start"] <= p["end"]]
+        level, target = speech_level_db(x, spans), target_for(p)
+        gain = 0.0 if level is None else max(-SEGMENT_MAX_CUT_DB, min(SEGMENT_MAX_BOOST_DB, target - level))
+        gain = 0.0 if abs(gain) < 1.5 else round(gain, 1)   # already close enough: leave the audio alone
+        gains.append(gain)
+        record.append({"start": round(p["start"], 2), "end": round(p["end"], 2), "target_db": target,
+                       "before_db": None if level is None else round(level, 1),
+                       "after_db": None if level is None else round(level + gain, 1), "gain_db": gain})
+
+    if any(gains):
+        half = sr // 2
+        xs, ys = [0], [gains[0]]
+        for k in range(1, len(parts)):
+            mid = int((parts[k - 1]["end"] + parts[k]["start"]) / 2 * sr)
+            xs += [mid - half, mid + half]
+            ys += [gains[k - 1], gains[k]]
+        xs.append(len(x))
+        ys.append(gains[-1])
+        tmp = wav.with_suffix(".level.wav")
+        try:
+            with wave.open(str(tmp), "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(sr)
+                piece = sr * 600
+                for a in range(0, len(x), piece):
+                    chunk = x[a:a + piece].astype(np.float32)
+                    env = 10 ** (np.interp(np.arange(a, a + len(chunk)), xs, ys) / 20)
+                    w.writeframes(np.clip(chunk * env, -32768, 32767).astype(np.int16).tobytes())
+            chunk = env = None
+            del x   # release the memory map before replacing the file (Windows)
+            tmp.replace(wav)
+        finally:
+            tmp.unlink(missing_ok=True)
+    leveling_path(date).write_text(json.dumps({"parts": record}, indent=2), encoding="utf-8")
+    return record
 
 
 # --- SPEAKER PROFILE MATCHER ---
@@ -1591,6 +1708,13 @@ class Engine:
                 }, indent=2, ensure_ascii=False), encoding="utf-8")
                 tmp_out.replace(json_out)
             finish("save")
+            if setting("relevel_segments"):
+                try:
+                    lv = relevel_parts(date_key)
+                    if lv:
+                        log(f"      {len(lv)} segment(s); levelled: " + ", ".join(f"{p['gain_db']:+.0f} dB" for p in lv))
+                except Exception as e:   # the transcript is saved; a levelling problem must not fail the day
+                    log(f"      couldn't level the segments: {e}")
             if progress:
                 progress(1.0, "Done")
             log(f"  Done -> {json_out}  ({len(set(names.values()))} speakers, {len(timeline)} lines)")
@@ -1922,6 +2046,20 @@ def load_transcript(path: Path) -> dict:
     data = json.loads(path.read_text(encoding="utf-8"))
     _transcript_cache[str(path)] = (mtime, data)
     return data
+
+
+_part_count_cache: dict[str, tuple[float, int]] = {}
+
+
+def part_count(path: Path) -> int:
+    """Number of segments in a day, cached until its transcript file changes."""
+    mtime = path.stat().st_mtime
+    hit = _part_count_cache.get(str(path))
+    if hit and hit[0] == mtime:
+        return hit[1]
+    n = len(day_parts(load_transcript(path)))
+    _part_count_cache[str(path)] = (mtime, n)
+    return n
 
 
 def transcript_source_names(data: dict) -> list[str]:
@@ -2521,6 +2659,203 @@ class Summarizer:
         threading.Thread(target=_watch, daemon=True, name="summary-watch").start()
 
 
+# --- MEETINGS: lines (or whole segments) the user marked, possibly across days ---
+MEETINGS_LOCK = threading.RLock()
+
+MEETING_CONTEXT = """You are summarising a meeting (or a group of related conversations) from a personal voice recorder.
+Transcript lines look like: [L12] 2026-10-02 9:43 AM Speaker 2: text
+The [L12] tag identifies the line. Speaker names are as written (some are placeholders like "Speaker 2").
+The transcript comes from automatic speech recognition, so expect some mistakes; don't invent facts to fill gaps.
+Only use what is in the transcript. Write in English."""
+
+MEETING_FORMAT = """Write a status summary of the meeting in Markdown using exactly these sections, in this order. Leave out any
+section that would be empty. Put the [L..] tag of the line(s) it came from at the end of every bullet.
+
+## Overview
+Two to four sentences: what the meeting was about and who took part.
+
+## Where things stand
+- topic or workstream: its status now (done, in progress, blocked, not started) and what happens next [L12]
+
+## Decisions
+- what was decided, and by whom [L20]
+
+## Action items
+- [ ] task (owner, due date if said) [L30]
+
+## Open questions & risks
+- unresolved question, blocker or concern [L40]
+
+Rules: no preamble or closing remarks; refer to people by the names in the transcript; never cite a [L..] tag that
+isn't in the transcript."""
+
+
+def meetings_path() -> Path:
+    return OUTPUT_DIR / "meetings.json"
+
+
+def load_meetings() -> list[dict]:
+    try:
+        return json.loads(meetings_path().read_text(encoding="utf-8")).get("meetings", [])
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+def update_meetings(fn):
+    """Run fn(meetings) on the saved list and save it; fn's return value is passed back."""
+    with MEETINGS_LOCK:
+        meetings = load_meetings()
+        result = fn(meetings)
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = meetings_path().with_suffix(".tmp")
+        tmp.write_text(json.dumps({"meetings": meetings}, indent=2, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(meetings_path())
+        return result
+
+
+def get_meeting(mid: str) -> dict | None:
+    return next((m for m in load_meetings() if m["id"] == mid), None)
+
+
+def clean_meeting_items(items: list[dict]) -> list[dict]:
+    out = []
+    for it in items:
+        try:
+            date, start = str(it["date"]), round(float(it["start"]), 2)
+        except (KeyError, TypeError, ValueError):
+            continue
+        if DATE_RE.match(date):
+            out.append({"date": date, "start": start, "text": str(it.get("text", ""))})
+    return out
+
+
+def meeting_lines(m: dict) -> tuple[list[dict], int]:
+    """The marked lines as they are in the transcripts now, oldest first, plus how many have gone
+    (trashed, or their day was re-transcribed)."""
+    by_date: dict[str, list[dict]] = {}
+    for it in m["items"]:
+        by_date.setdefault(it["date"], []).append(it)
+    out, missing = [], 0
+    for date in sorted(by_date):
+        if not transcript_path(date).is_file():
+            missing += len(by_date[date])
+            continue
+        data = load_transcript(transcript_path(date))
+        segs, sources = data.get("segments", []), transcript_sources(data)
+        used = set()
+        for it in by_date[date]:
+            near = [s for s in segs if abs(s["start"] - it["start"]) < 0.05 and id(s) not in used]
+            seg = next((s for s in near if s["text"] == it["text"]), near[0] if near else None)
+            if seg is None:
+                missing += 1
+                continue
+            used.add(id(seg))
+            out.append({"date": date, "start": seg["start"], "end": seg["end"], "speaker": seg.get("speaker", "Unknown"),
+                        "text": seg["text"], "at": clock_label(sources, seg["start"])})
+    out.sort(key=lambda l: (l["date"], l["start"]))
+    return out, missing
+
+
+def meeting_fingerprint(lines: list[dict]) -> str:
+    import hashlib
+    body = [(l["date"], l["start"], l["speaker"], l["text"]) for l in lines]
+    return hashlib.sha1(json.dumps(body, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+def meeting_facts(m: dict) -> dict:
+    """What the Meetings page shows without opening a meeting: size, who, when, and the summary's state."""
+    lines, missing = meeting_lines(m)
+    talk: dict[str, float] = {}
+    span: dict[str, list[float]] = {}
+    for l in lines:
+        talk[l["speaker"]] = talk.get(l["speaker"], 0.0) + l["end"] - l["start"]
+        s = span.setdefault(l["date"], [l["start"], l["end"]])
+        s[0], s[1] = min(s[0], l["start"]), max(s[1], l["end"])
+    saved = m.get("summary")
+    overview = ""
+    if saved:
+        hit = re.search(r"(?ms)^## Overview\s*\n(.+?)(?=^## |\Z)", saved.get("markdown", ""))
+        overview = re.sub(r"\s*\[L[\d\sL,\u2013-]*\]", "", hit.group(1)).strip() if hit else ""
+    return {"id": m["id"], "name": m["name"], "created": m.get("created"), "lines": len(lines), "missing": missing,
+            "marks": [[it["date"], it["start"]] for it in m["items"]],
+            "days": sorted(span), "span": round(sum(b - a for a, b in span.values())),
+            "people": [{"name": n, "seconds": round(t)} for n, t in sorted(talk.items(), key=lambda kv: -kv[1])],
+            "first": {"date": lines[0]["date"], "start": lines[0]["start"], "at": lines[0]["at"]} if lines else None,
+            "summary": ({"created": saved.get("created"), "model": saved.get("model"), "overview": overview,
+                         "outdated": saved.get("fingerprint") != meeting_fingerprint(lines)} if saved else None)}
+
+
+def summarize_meeting(mid: str, progress=None) -> dict:
+    m = get_meeting(mid)
+    if m is None:
+        raise RuntimeError("That meeting no longer exists.")
+    marked, _ = meeting_lines(m)
+    if not marked:
+        raise RuntimeError("Add some lines to this meeting first.")
+    lines, refs = [], {}
+    for i, l in enumerate(marked, 1):
+        refs[f"L{i}"] = {"date": l["date"], "start": l["start"], "at": l["at"]}
+        lines.append(f"[L{i}] {l['date']} {l['at']} {l['speaker'].replace('_', ' ')}: {l['text']}")
+    parts, cur = [], []
+    for line in lines:
+        if cur and sum(len(x) + 1 for x in cur) + len(line) > SUMMARY_CHUNK_CHARS:
+            parts.append(cur)
+            cur = []
+        cur.append(line)
+    parts.append(cur)
+    head = f"Meeting \"{m['name']}\""
+    if len(parts) == 1:
+        if progress:
+            progress(0.1, "Writing the summary")
+        md = ollama_chat(f"{head}:\n\n" + "\n".join(parts[0]) + "\n\n" + MEETING_FORMAT, MEETING_CONTEXT,
+                         on_token=lambda k: progress and progress(min(0.95, 0.1 + k / 1500), f"Writing the summary ({k} words so far)"))
+    else:
+        notes = []
+        for n, part in enumerate(parts, 1):
+            if progress:
+                progress((n - 1) / (len(parts) + 1), f"Reading part {n} of {len(parts)}")
+            notes.append(ollama_chat(
+                f"Part {n} of {len(parts)} of {head}:\n\n" + "\n".join(part) +
+                "\n\nWrite compact bullet-point notes on this part only: what each topic's status is, decisions, action items "
+                "with owners, open questions. End every bullet with the [L..] tag(s) it came from, copied exactly. No preamble.",
+                MEETING_CONTEXT, max_tokens=900))
+        if progress:
+            progress(len(parts) / (len(parts) + 1), "Writing the summary")
+        md = ollama_chat(f"Notes on {head}, part by part in time order:\n\n" +
+                         "\n\n".join(f"### Part {n}\n{t}" for n, t in enumerate(notes, 1)) +
+                         "\n\nCombine these notes into one summary of the whole meeting (merge duplicates; keep the [L..] tags).\n\n" + MEETING_FORMAT,
+                         MEETING_CONTEXT, max_tokens=2000)
+    md = drop_empty_sections(md)
+    used = {f"L{n}" for tag in re.findall(r"\[(L\d+(?:\s*[-\u2013,]\s*L?\d+)*)\]", md) for n in re.findall(r"\d+", tag)}
+    result = {"markdown": md, "model": OLLAMA_MODEL, "created": time.time(), "fingerprint": meeting_fingerprint(marked),
+              "refs": {r: refs[r] for r in used if r in refs}}
+
+    def save(meetings):
+        for x in meetings:
+            if x["id"] == mid:
+                x["summary"] = result
+    update_meetings(save)
+    return result
+
+
+class MeetingSummarizer(Summarizer):
+    """Same one-at-a-time background runner as day summaries (they share the model lock); keyed by meeting id."""
+
+    def _run(self, mid: str):
+        with self._one_at_a_time:
+            self._set(mid, status="running", label="Starting the model (first time takes about a minute)")
+            try:
+                problems = ollama_problems()
+                if problems:
+                    raise RuntimeError(" ".join(problems))
+                log(f"[meeting] {mid}: summarising with {OLLAMA_MODEL}")
+                summarize_meeting(mid, progress=lambda p, label: self._set(mid, progress=p, label=label))
+                self._set(mid, status="done")
+            except Exception as e:
+                log(f"[meeting] {mid} FAILED: {e}")
+                self._set(mid, status="failed", error=str(e))
+
+
 # --- BACKGROUND PROCESSING (for the viewer) ---
 class Processor:
     """Single worker thread that transcribes days queued from the viewer, one at a time."""
@@ -2725,6 +3060,7 @@ def create_app(auto_process: bool = False, force: bool = False):
         setup_done: bool | None = None
         auto_transcribe: bool | None = None
         auto_sync: bool | None = None
+        relevel_segments: bool | None = None
         language: str | None = None
         rustle_strength: float | None = None
 
@@ -2870,6 +3206,7 @@ def create_app(auto_process: bool = False, force: bool = False):
                         "duration": round(src_total or (segs[-1]["end"] if segs else 0), 1),
                         "speakers": sorted(talk, key=talk.get, reverse=True),
                         "lines": len(segs),
+                        "parts": part_count(transcripts[date]),
                         "recordings": max(len(files), len(known)),
                         "new_recordings": len({f.name for f in files} - known),
                         "edited": sum(1 for s in segs if s.get("edited")),
@@ -2905,6 +3242,9 @@ def create_app(auto_process: bool = False, force: bool = False):
             # The viewer only needs which lines taught whom, not the 256-number embeddings
             data["line_prints"] = [{"start": p["start"], "text": p["text"], "person": p["person"]}
                                    for p in data.get("line_prints", [])]
+            levels = load_leveling(date)
+            data["parts"] = [{**p, "level": next((o for o in levels if abs(o["start"] - p["start"]) < 5), None)}
+                             for p in day_parts(data)]
             data["status"] = "ready"
         else:
             files = get_daily_batches(INPUT_DIR).get(date)
@@ -3246,6 +3586,119 @@ def create_app(auto_process: bool = False, force: bool = False):
             raise HTTPException(404, f"No voice profile called {body.name}")
         log(f"Deleted voice profile '{body.name}' (transcripts unchanged)")
         return {"ok": True}
+
+    class LevelBody(BaseModel):
+        start: float
+        target_db: float
+
+    @app.post("/api/days/{date}/parts/level")
+    def level_part(date: str, body: LevelBody):
+        """Re-level one segment of the day to a target speech level (dBFS); rewrites merged.wav."""
+        check_date(date)
+        if not transcript_path(date).is_file():
+            raise HTTPException(404, f"No transcript for {date}")
+        target = min(max(body.target_db, -36.0), -6.0)
+        with TRANSCRIPT_LOCK:
+            record = relevel_parts(date, {body.start: target})
+        log(f"{date}: segment at {body.start:.0f}s levelled to {target:.0f} dBFS")
+        return {"levels": record}
+
+    class MeetingBody(BaseModel):
+        name: str = ""
+        items: list[dict] = []
+
+    class MeetingItemsBody(BaseModel):
+        add: list[dict] = []
+        remove: list[dict] = []
+
+    meeting_summarizer = MeetingSummarizer()
+
+    def meeting_or_404(mid: str) -> dict:
+        m = get_meeting(mid)
+        if m is None:
+            raise HTTPException(404, "No such meeting")
+        return m
+
+    def meeting_summary_state(m: dict) -> dict:
+        job = meeting_summarizer.state(m["id"])
+        out = {"status": job.get("status") if job.get("status") in ("queued", "running", "failed") else "none",
+               "progress": job.get("progress"), "label": job.get("label"), "error": job.get("error"), "model": OLLAMA_MODEL}
+        saved = m.get("summary")
+        if saved:
+            lines, _ = meeting_lines(m)
+            out.update({"markdown": drop_empty_sections(saved["markdown"]), "refs": saved.get("refs", {}),
+                        "created": saved.get("created"), "model": saved.get("model"),
+                        "outdated": saved.get("fingerprint") != meeting_fingerprint(lines)})
+            if out["status"] == "none":
+                out["status"] = "ready"
+        return out
+
+    @app.get("/api/meetings")
+    def list_meetings():
+        return {"meetings": sorted((meeting_facts(m) for m in load_meetings()),
+                                   key=lambda f: (f["first"]["date"], f["first"]["start"]) if f["first"] else ("", 0), reverse=True)}
+
+    @app.post("/api/meetings")
+    def create_meeting(body: MeetingBody):
+        m = {"id": uuid.uuid4().hex[:8], "name": body.name.strip()[:120] or "Untitled meeting", "created": time.time(),
+             "items": clean_meeting_items(body.items)}
+        update_meetings(lambda ms: ms.append(m))
+        log(f"Meeting '{m['name']}' created with {len(m['items'])} line(s)")
+        return meeting_facts(m)
+
+    @app.get("/api/meetings/{mid}")
+    def read_meeting(mid: str):
+        m = meeting_or_404(mid)
+        lines, _ = meeting_lines(m)
+        return {**meeting_facts(m), "transcript": lines, "summary_state": meeting_summary_state(m)}
+
+    @app.post("/api/meetings/{mid}/items")
+    def change_meeting_items(mid: str, body: MeetingItemsBody):
+        meeting_or_404(mid)
+        add, remove = clean_meeting_items(body.add), clean_meeting_items(body.remove)
+        near = lambda a, b: a["date"] == b["date"] and abs(a["start"] - b["start"]) < 0.02
+
+        def change(meetings):
+            m = next((x for x in meetings if x["id"] == mid), None)
+            if m is None:
+                return None
+            m["items"] = [i for i in m["items"] if not any(near(i, r) for r in remove)]
+            m["items"] += [a for a in add if not any(near(i, a) for i in m["items"])]
+            return m
+        m = update_meetings(change)
+        if m is None:
+            raise HTTPException(404, "No such meeting")
+        return meeting_facts(m)
+
+    @app.post("/api/meetings/{mid}/rename")
+    def rename_meeting(mid: str, body: MeetingBody):
+        name = body.name.strip()[:120]
+        if not name:
+            raise HTTPException(400, "A meeting needs a name")
+
+        def rename_it(meetings):
+            for m in meetings:
+                if m["id"] == mid:
+                    m["name"] = name
+                    return True
+            return False
+        if not update_meetings(rename_it):
+            raise HTTPException(404, "No such meeting")
+        return {"name": name}
+
+    @app.delete("/api/meetings/{mid}")
+    def delete_meeting(mid: str):
+        def drop(meetings):
+            before = len(meetings)
+            meetings[:] = [m for m in meetings if m["id"] != mid]
+            return len(meetings) < before
+        return {"deleted": update_meetings(drop)}
+
+    @app.post("/api/meetings/{mid}/summary")
+    def make_meeting_summary(mid: str):
+        m = meeting_or_404(mid)
+        meeting_summarizer.start(mid)
+        return meeting_summary_state(m)
 
     return app
 
