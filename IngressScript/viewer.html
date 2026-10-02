@@ -486,11 +486,26 @@
   dialog.blocked .count-section { display: none; }
   dialog.blocked { border-color: color-mix(in srgb, var(--warn) 60%, transparent); }
   /* Voice review: one card per voice, unsure ones first */
+/* Sticky footer for review dialog */
+  .voices-footer {
+    position: sticky;
+    bottom: 0;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    padding-top: 16px;
+    margin-top: 8px;
+    display: flex;
+    gap: 10px;
+    justify-content: flex-end;
+  }
+  dialog.wide .voices-footer { margin-right: 0; }
   .vr-list { display: grid; gap: 12px; overflow-y: auto; flex: 1 1 auto; min-height: 140px; padding-right: 4px; }
   .vr { border: 1px solid var(--border); border-radius: 12px; background: var(--bg); padding: 12px 14px; }
+  .vr-group > .vr-member { border: 0; border-top: 1px solid var(--border); border-radius: 0; background: none; padding: 10px 0 0; margin-top: 10px; }
   .vr.unsure { border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
   .vr > summary { list-style: none; cursor: pointer; }
   .vr > summary::-webkit-details-marker { display: none; }
+  .vr > summary::marker { display: none; }
   .vr-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .vr-head .dot { width: 12px; height: 12px; border-radius: 50%; flex: none; }
   .vr-head .nm { font-weight: 600; }
@@ -801,11 +816,11 @@
 <dialog id="voices-dlg" class="wide">
   <form method="dialog">
     <h3 id="voices-title">Who was talking?</h3>
-    <p class="muted" style="margin:0 0 12px">Play a few lines from each voice and pick who it is. Naming a voice teaches its profile, so it's recognised on new days.</p>
+    <p class="muted" style="margin:0 0 12px">Play a few lines from each voice and choose who it is. Confirmed assignments stay here as drafts until you save.</p>
     <div class="vr-list" id="voices-list"></div>
-    <div class="row">
+    <div class="voices-footer">
       <button class="btn" value="later" title="Close for now; it stays marked on Home">Later</button>
-      <button class="btn primary" value="done" id="voices-done">Done</button>
+      <button class="btn primary" type="button" id="voices-done">Save and finish</button>
     </div>
   </form>
 </dialog>
@@ -2220,7 +2235,7 @@
   }
 
   // "Who is this?" for one voice on this day: pick anyone the app knows, or a new name
-  function whoPicker(spk) {
+  function whoPicker(spk, reviewMode = false) {
     const box = el('div', 'who-row');
     const sel = el('select'); sel.title = 'Who is this voice? (changes this day only)';
     sel.setAttribute('aria-label', `Who is ${displayName(spk)}?`);
@@ -2243,13 +2258,40 @@
     const tvNew = el('option', null, 'New TV channel / show…'); tvNew.value = '__tvnew__'; tvg.append(tvNew);
     const hide = el('option', null, 'Just hide (don’t learn)'); hide.value = '__hide__'; tvg.append(hide);
     sel.append(tvg);
-    sel.value = spk;
+    const draft = reviewMode && state.reviewDraft.get(spk);
+    if (draft) {
+      const value = draft.kind === 'hide' ? '__hide__' : draft.kind === 'tv' ? 'tv:' + draft.name : draft.name;
+      if (![...sel.options].some(o => o.value === value)) {
+        const option = el('option', null, draft.kind === 'hide' ? 'Just hide (don’t learn)' : displayName(draft.name));
+        option.value = value; sel.append(option);
+      }
+      sel.value = value;
+    } else sel.value = spk;
     const input = el('input'); input.placeholder = 'Name, then Enter'; input.classList.add('hidden');
     let tvMode = false;
+    const assign = (kind, name) => {
+      if (reviewMode) stageVoiceReview(spk, kind, name);
+      else if (kind === 'tv') tvVoice(spk, name);
+      else if (kind === 'hide') hideVoice(spk);
+      else relabelVoice(spk, name);
+    };
     const apply = name => {
       name = (name || '').trim();
-      if (!name || name === spk) { sel.value = spk; input.classList.add('hidden'); sel.classList.remove('hidden'); return; }
-      if (tvMode) tvVoice(spk, name); else relabelVoice(spk, name);
+      if (!name || name === spk) {
+        if (reviewMode && state.reviewDraft.has(spk)) {
+          state.reviewDraft.delete(spk); state.reviewNamed.delete(spk); renderVoiceReview(); return;
+        }
+        sel.value = spk; input.classList.add('hidden'); sel.classList.remove('hidden'); return;
+      }
+      assign(tvMode ? 'tv' : 'person', name);
+    };
+    const restoreDraftSelection = () => {
+      if (!reviewMode) return;
+      const draft = state.reviewDraft.get(spk);
+      if (!draft) { sel.value = spk; return; }
+      const value = draft.kind === 'hide' ? '__hide__' : draft.kind === 'tv' ? 'tv:' + draft.name : draft.name;
+      if ([...sel.options].some(o => o.value === value)) sel.value = value;
+      else sel.value = spk;
     };
     sel.onchange = () => {
       if (sel.value === '__new__' || sel.value === '__tvnew__') {
@@ -2257,15 +2299,20 @@
         input.placeholder = tvMode ? 'Channel or show, then Enter' : 'Name, then Enter';
         sel.classList.add('hidden'); input.classList.remove('hidden'); input.focus();
       }
-      else if (sel.value === '__hide__') { sel.value = spk; hideVoice(spk); }
-      else if (sel.value.startsWith('tv:')) { const n = sel.value.slice(3); sel.value = spk; tvVoice(spk, n); }
+      else if (sel.value === '__hide__') { assign('hide', ''); }
+      else if (sel.value.startsWith('tv:')) { const n = sel.value.slice(3); assign('tv', n); }
+      else if (sel.value === spk) {
+        if (reviewMode) {
+          state.reviewDraft.delete(spk); state.reviewNamed.delete(spk); renderVoiceReview();
+        }
+      }
       else apply(sel.value);
     };
     input.onkeydown = e => {
       if (e.key === 'Enter') { e.preventDefault(); apply(input.value); }
-      if (e.key === 'Escape') { e.preventDefault(); apply(''); }
+      if (e.key === 'Escape') { e.preventDefault(); restoreDraftSelection(); input.classList.add('hidden'); sel.classList.remove('hidden'); }
     };
-    input.onblur = () => { if (!input.classList.contains('hidden')) apply(''); };
+    input.onblur = () => { if (!input.classList.contains('hidden')) apply(input.value || ''); };
     box.append(sel, input);
     // How the name was decided, and a one-click "maybe" when we have a good guess
     const v = (state.data?.voices || []).filter(x => x.name === spk);
@@ -2275,10 +2322,16 @@
       const maybe = el('button', 'btn small maybe', `Maybe ${displayName(sugg[0].name)}? ${Math.round(sugg[0].score * 100)}%`);
       maybe.type = 'button';
       maybe.title = `This voice sounds most like ${displayName(sugg[0].name)}. Click to use that name on this day.`;
-      maybe.onclick = () => relabelVoice(spk, sugg[0].name);
+      maybe.onclick = () => assign('person', sugg[0].name);
       box.append(maybe);
     }
     return box;
+  }
+
+  function stageVoiceReview(spk, kind, name) {
+    state.reviewDraft.set(spk, { kind, name });
+    state.reviewNamed.add(spk);
+    renderVoiceReview();
   }
 
   // Best voice-match guesses for a name on this day (from the transcript's per-voice candidates)
@@ -2374,6 +2427,7 @@
   const snip = new Audio();
   snip.preload = 'none';
   state.reviewNamed = new Set();   // names given in this review session (shown as done)
+  state.reviewDraft = new Map();
   state.reviewOk = new Set();      // recognised voices the user confirmed
   state.reviewSeen = new Set();    // days whose review already popped up this session
   let snipEnd = 0, snipBtn = null;
@@ -2409,20 +2463,29 @@
     return lines.sort((a, b) => score(b) - score(a));
   }
 
-  function voiceCard(v) {
-    const sure = v.match > 0 || v.named || state.reviewNamed.has(v.spk) || state.reviewOk.has(v.spk);
-    const card = el(sure ? 'details' : 'div', 'vr' + (sure ? '' : ' unsure'));
+  function voiceCard(v, member = false) {
+    const draft = state.reviewDraft.get(v.spk);
+    const sure = !!draft || v.match > 0 || v.named || state.reviewNamed.has(v.spk) || state.reviewOk.has(v.spk);
+    const card = el(member || sure ? 'details' : 'div', member ? 'vr-member' : 'vr' + (sure ? '' : ' unsure'));
     const head = el('div', 'vr-head');
     const dot = el('span', 'dot'); dot.style.background = state.colors[v.spk];
     head.append(dot, el('span', 'nm', displayName(v.spk)), el('span', 'meta', `${fmtDur(v.talk)} talking · ${plural(v.lines.length, 'line')}`), el('span', 'grow'));
     const sugg = voiceSuggestions(v.spk);
     let status;
-    if (state.reviewNamed.has(v.spk) || v.named) status = el('span', 'vr-status ok', 'Named by you');
+    if (draft) status = el('span', 'vr-status ok', draft.kind === 'hide' ? 'Pending · hidden' : `Pending · ${displayName(draft.name)}`);
+    else if (state.reviewNamed.has(v.spk) || v.named) status = el('span', 'vr-status ok', 'Named by you');
     else if (state.reviewOk.has(v.spk)) status = el('span', 'vr-status ok', 'Confirmed');
     else if (v.match > 0) status = el('span', 'vr-status ok', `Recognised · ${Math.round(v.match * 100)}%`);
     else if (sugg[0]) status = el('span', 'vr-status', `Sounds like ${displayName(sugg[0].name)} · ${Math.round(sugg[0].score * 100)}%`);
     else status = el('span', 'vr-status', 'New voice');
     head.append(status);
+    if (draft) {
+      const undo = btn('Undo', 'small', e => {
+        e.preventDefault(); e.stopPropagation();
+        state.reviewDraft.delete(v.spk); state.reviewNamed.delete(v.spk); renderVoiceReview();
+      });
+      undo.type = 'button'; head.append(undo);
+    }
     if (v.match > 0 && !v.named && !state.reviewOk.has(v.spk) && !state.reviewNamed.has(v.spk)) {
       const ok = btn('Looks right', 'small', e => { e.preventDefault(); e.stopPropagation(); state.reviewOk.add(v.spk); renderVoiceReview(); });
       ok.type = 'button'; head.append(ok);
@@ -2432,7 +2495,7 @@
     const recText = recs.length
       ? `In ${plural(recs.length, 'recording')}: ` + recs.map(i => clock(state.sources[i].recorded_at) || state.sources[i].name || `#${i + 1}`).join(', ')
       : '';
-    const top = sure ? el('summary') : el('div');
+    const top = sure || member ? el('summary') : el('div');
     top.append(head);
     if (recText) top.append(el('div', 'vr-recs', recText));
     card.append(top);
@@ -2459,11 +2522,27 @@
     const side = el('div');
     const sp = btn('Several people? Split…', 'small', () => openSplit(v.spk));
     sp.type = 'button'; sp.title = 'This voice mixes several people: sort its lines between them';
-    side.append(el('div', 'vr-sect', 'Who is this?'), whoPicker(v.spk), sp);
+    side.append(el('div', 'vr-sect', 'Who is this?'), whoPicker(v.spk, true), sp);
     body.append(list, side);
     card.append(body);
     if (card.tagName === 'DETAILS') card.ontoggle = () => { if (card.open && !shown) addSnips(); };
     else addSnips();
+    return card;
+  }
+
+  function voiceGroup(group) {
+    const card = el('details', 'vr vr-group');
+    const summary = el('summary');
+    const head = el('div', 'vr-head');
+    const dot = el('span', 'dot'); dot.style.background = state.colors[group.name] || 'var(--accent)';
+    const talk = group.voices.reduce((sum, v) => sum + v.talk, 0);
+    head.append(dot, el('span', 'nm', group.kind === 'hide' ? 'Hidden as TV / music' : displayName(group.name)),
+      el('span', 'meta', `${fmtDur(talk)} talking · ${plural(group.voices.length, 'voice')}`),
+      el('span', 'grow'), el('span', 'vr-status ok', 'Pending · expand to review'));
+    summary.append(head);
+    card.append(summary, ...group.voices.map(v => {
+      const member = voiceCard(v, true); member.open = true; return member;
+    }));
     return card;
   }
 
@@ -2481,21 +2560,46 @@
       named: (state.data?.voices || []).some(x => x.name === spk && x.named),
     }));
     const isSure = v => v.match > 0 || v.named || state.reviewNamed.has(v.spk) || state.reviewOk.has(v.spk);
-    const unsure = voices.filter(v => !isSure(v)).sort((a, b) => b.talk - a.talk);
-    const sure = voices.filter(isSure).sort((a, b) => b.talk - a.talk);
+    const pending = voices.filter(v => state.reviewDraft.has(v.spk));
+    const unsure = voices.filter(v => !state.reviewDraft.has(v.spk) && !isSure(v)).sort((a, b) => b.talk - a.talk);
+    const sure = voices.filter(v => !state.reviewDraft.has(v.spk) && isSure(v)).sort((a, b) => b.talk - a.talk);
     const frag = document.createDocumentFragment();
-    if (unsure.length) frag.append(el('div', 'vr-sect', `Not sure who these are · ${unsure.length}`), ...unsure.map(voiceCard));
-    if (sure.length) frag.append(el('div', 'vr-sect', `Named or recognised · ${sure.length}`), ...sure.map(voiceCard));
+    if (state.reviewDraft.size) {
+      const groups = new Map();
+      for (const [spk, draft] of state.reviewDraft) {
+        const key = `${draft.kind}:${draft.name}`;
+        if (!groups.has(key)) groups.set(key, { ...draft, voices: [] });
+        
+        const v = voices.find(v => v.spk === spk) || { spk, talk: 0, lines: [], match: 0, named: false };
+        groups.get(key).voices.push(v);
+      }
+      for (const group of groups.values()) {
+        const destination = voices.find(v => v.spk === group.name && !state.reviewDraft.has(v.spk));
+        if (destination && !group.voices.includes(destination)) group.voices.unshift(destination);
+      }
+      const cards = [...groups.values()].map(group => group.voices.length > 1
+        ? voiceGroup(group) : voiceCard(group.voices[0]));
+      frag.append(el('div', 'vr-sect', `Pending assignments · ${plural(state.reviewDraft.size, 'assignment')}`), ...cards);
+    }
+    if (unsure.length) frag.append(el('div', 'vr-sect', `Not sure who these are · ${unsure.length}`), ...unsure.map(v => voiceCard(v)));
+    if (sure.length) frag.append(el('div', 'vr-sect', `Named or recognised · ${sure.length}`), ...sure.map(v => voiceCard(v)));
     if (!voices.length) frag.append(el('p', 'note', 'Nobody said anything on this day.'));
     $('voices-list').replaceChildren(frag);
     $('voices-title').textContent = `Who was talking on ${shortDate(state.date)}?`;
-    $('voices-done').textContent = unsure.length ? `Done (${plural(unsure.length, 'voice')} left unnamed)` : 'Done';
+    $('voices-done').textContent = state.reviewDraft.size
+      ? `Save ${plural(state.reviewDraft.size, 'assignment')} and finish`
+      : unsure.length ? `Save and finish (${plural(unsure.length, 'voice')} left unnamed)` : 'Save and finish';
   }
 
   function openVoiceReview() {
     if (!state.server || !isReady()) return;
     state.reviewSeen.add(state.date);
-    state.reviewOk = new Set(); state.reviewNamed = new Set();
+    state.reviewOk = new Set(); state.reviewNamed = new Set(); 
+    
+    // Only clear drafts if we don't have any, or if we're starting a fresh review.
+    // To prevent the "swapping" feel, we should preserve existing drafts if the dialog is being reopened.
+    if (!state.reviewDraft.size) state.reviewDraft = new Map();
+    
     renderVoiceReview();
     if (!$('voices-dlg').open) $('voices-dlg').showModal();
   }
@@ -2503,14 +2607,50 @@
   $('voices-dlg').addEventListener('close', stopSnip);
   $('voices-dlg').addEventListener('click', e => { if (e.target.closest('.row .btn')) stopSnip(); });
   // Saved from the button itself, not the dialog's close event (which isn't reliable in every browser)
-  $('voices-done').addEventListener('click', async () => {
+  $('voices-done').addEventListener('click', async e => {
+    e.preventDefault();
     const date = state.date;
     if (!date) return;
+    const button = $('voices-done');
+    button.disabled = true;
+    const post = (url, body) => api(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const saved = [];
     try {
-      await api(`/api/days/${date}/voices/reviewed`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reviewed: true }) });
+      for (const [speaker, assignment] of state.reviewDraft) {
+        let result;
+        if (assignment.kind === 'person') result = await post(`/api/days/${date}/relabel`, { old: speaker, new: assignment.name });
+        else if (assignment.kind === 'tv') result = await post(`/api/days/${date}/tv-voice`, { speaker, name: assignment.name });
+        else result = await post(`/api/days/${date}/voice-noise`, { speaker, noise: true });
+        saved.push({ speaker, assignment, result });
+      }
+      await post(`/api/days/${date}/voices/reviewed`, { reviewed: true });
       if (state.data) state.data.voices_reviewed = true;
+      state.reviewDraft.clear();
+      if (state.date === date) await openDay(date, { keepPosition: true });
+      if ($('voices-dlg').open) $('voices-dlg').close();
       refreshLibrary();
-    } catch (e) { toast(e.message); }
+      toast('Voice assignments saved');
+    } catch (error) {
+      let rollbackFailed = false;
+      for (const item of saved.reverse()) {
+        const { speaker, assignment, result } = item;
+        try {
+          if (assignment.kind === 'person') {
+            await post(`/api/days/${date}/relabel`, { old: assignment.name, new: speaker, lines: result.changed, labels: result.labels });
+          } else if (assignment.kind === 'tv') {
+            if (result.shown?.length) await post(`/api/days/${date}/voice-noise`, { speaker: assignment.name, noise: true, lines: result.shown });
+            await post(`/api/days/${date}/relabel`, { old: assignment.name, new: speaker, lines: result.changed, labels: result.labels });
+          } else {
+            await post(`/api/days/${date}/voice-noise`, { speaker, noise: false, lines: result.changed });
+          }
+        } catch { rollbackFailed = true; }
+      }
+      if (rollbackFailed) {
+        state.reviewDraft = new Map();
+        if (state.date === date) await openDay(date, { keepPosition: true });
+        toast(`Save failed and some changes could not be undone: ${error.message}`);
+      } else toast(saved.length ? `Save failed; changes rolled back. ${error.message}` : error.message);
+    } finally { button.disabled = false; }
   });
 
   function renderTranscript() {
