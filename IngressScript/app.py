@@ -2447,11 +2447,15 @@ class Processor:
 
 # --- WEB VIEWER ---
 def create_app(auto_process: bool = False, force: bool = False):
-    from fastapi import FastAPI, HTTPException
+    from fastapi import FastAPI, HTTPException, Request
     from fastapi.responses import FileResponse
+    from fastapi.staticfiles import StaticFiles
+    from fastapi.templating import Jinja2Templates
     from pydantic import BaseModel
 
     app = FastAPI(title="Recorder Playback", docs_url=None, redoc_url=None)
+    app.mount("/static", StaticFiles(directory=SCRIPT_DIR / "static"), name="static")
+    templates = Jinja2Templates(directory=SCRIPT_DIR / "templates")
     processor = Processor()
 
     def after_sync(days: list[str]):
@@ -2618,8 +2622,10 @@ def create_app(auto_process: bool = False, force: bool = False):
         return path
 
     @app.get("/")
-    def index():
-        return FileResponse(SCRIPT_DIR / "viewer.html", headers={"Cache-Control": "no-cache"})
+    def index(request: Request):
+        # A version from the JS mtime keeps the browser from serving stale assets after edits
+        version = int((SCRIPT_DIR / "static" / "viewer.js").stat().st_mtime)
+        return templates.TemplateResponse(request, "viewer.html", {"version": version})
 
     @app.get("/api/library")
     def library():
